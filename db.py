@@ -9,6 +9,10 @@ from datetime import datetime
 from config import DB_PATH
 
 
+# ─────────────────────────────────────────────
+# CONNECTION + SCHEMA
+# ─────────────────────────────────────────────
+
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
@@ -66,9 +70,23 @@ def _ensure_schema(conn: sqlite3.Connection):
             generated_at TEXT,
             FOREIGN KEY (sl_no) REFERENCES history(sl_no)
         );
+
+        CREATE TABLE IF NOT EXISTS tool_results (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            sl_no     INTEGER,
+            tool_name TEXT NOT NULL,
+            result    TEXT,
+            done_at   TEXT,
+            FOREIGN KEY (sl_no) REFERENCES history(sl_no),
+            UNIQUE(sl_no, tool_name)
+        );
     """)
     conn.commit()
 
+
+# ─────────────────────────────────────────────
+# WRITE
+# ─────────────────────────────────────────────
 
 def create_session(target: str) -> int:
     conn = get_connection()
@@ -120,6 +138,10 @@ def save_summary(sl_no, raw_scan, ai_analysis, risk_level):
     conn.close()
 
 
+# ─────────────────────────────────────────────
+# READ
+# ─────────────────────────────────────────────
+
 def get_all_history():
     conn = get_connection()
     rows = conn.execute("SELECT sl_no, target, scan_date, status FROM history ORDER BY sl_no DESC").fetchall()
@@ -160,6 +182,10 @@ def get_exploits(sl_no):
     return rows
 
 
+# ─────────────────────────────────────────────
+# EDIT
+# ─────────────────────────────────────────────
+
 def edit_vulnerability(vuln_id, field, value):
     allowed = {"vuln_name", "severity", "port", "service", "description"}
     if field not in allowed:
@@ -196,6 +222,10 @@ def edit_summary_risk(sl_no, risk_level):
     conn.close()
 
 
+# ─────────────────────────────────────────────
+# DELETE
+# ─────────────────────────────────────────────
+
 def delete_vulnerability(vuln_id):
     conn = get_connection()
     conn.execute("DELETE FROM fixes WHERE vuln_id = ?", (vuln_id,))
@@ -224,10 +254,15 @@ def delete_full_session(sl_no):
     conn.execute("DELETE FROM exploits_attempted WHERE sl_no = ?", (sl_no,))
     conn.execute("DELETE FROM vulnerabilities WHERE sl_no = ?", (sl_no,))
     conn.execute("DELETE FROM summary WHERE sl_no = ?", (sl_no,))
+    conn.execute("DELETE FROM tool_results WHERE sl_no = ?", (sl_no,))
     conn.execute("DELETE FROM history WHERE sl_no = ?", (sl_no,))
     conn.commit()
     conn.close()
 
+
+# ─────────────────────────────────────────────
+# DISPLAY HELPERS
+# ─────────────────────────────────────────────
 
 def print_history(rows):
     print("\n" + "─"*65)
@@ -243,6 +278,7 @@ def print_session(data: dict):
     print(f"\n{'='*60}")
     print(f"  SL# {h[0]} | Target: {h[1]} | {h[2]} | {h[3]}")
     print(f"{'='*60}")
+
     print("\n[ VULNERABILITIES ]")
     if data["vulns"]:
         for v in data["vulns"]:
@@ -250,12 +286,14 @@ def print_session(data: dict):
             print(f"           {v[6]}")
     else:
         print("  None recorded.")
+
     print("\n[ FIXES ]")
     if data["fixes"]:
         for f in data["fixes"]:
             print(f"  id={f[0]} | vuln_id={f[2]} | [{f[4]}] {f[3]}")
     else:
         print("  None recorded.")
+
     print("\n[ EXPLOITS ATTEMPTED ]")
     if data["exploits"]:
         for e in data["exploits"]:
@@ -264,6 +302,7 @@ def print_session(data: dict):
             print(f"           Notes:   {e[6]}")
     else:
         print("  None recorded.")
+
     print("\n[ SUMMARY ]")
     if data["summary"]:
         s = data["summary"]
@@ -275,7 +314,16 @@ def print_session(data: dict):
     print()
 
 
+# ─────────────────────────────────────────────
+# DIFF
+# ─────────────────────────────────────────────
+
 def diff_sessions(sl_a: int, sl_b: int) -> dict:
+    """
+    Compare vulnerabilities of two sessions.
+    Returns dict with keys: new, fixed, changed, same
+    Each entry is a vuln dict with keys: vuln_name, severity (+ old_sev/new_sev for changed).
+    """
     def _vuln_map(sl_no):
         rows = get_vulnerabilities(sl_no)
         return {(r[2] or "").lower(): {"vuln_name": r[2], "severity": (r[3] or "unknown").lower()}
@@ -309,3 +357,51 @@ if __name__ == "__main__":
         conn.close()
     except Exception as e:
         print(f"[!] Database error: {e}")
+
+
+# ─────────────────────────────────────────────
+# SCAN RESUME + STATS
+# ─────────────────────────────────────────────
+
+def get_session_count() -> int:
+    """Total number of scan sessions in the database."""
+    conn = get_connection()
+    row = conn.execute("SELECT COUNT(*) FROM history").fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def mark_session_partial(sl_no: int):
+    """Mark a session as partially complete (interrupted scan)."""
+    conn = get_connection()
+    conn.execute("UPDATE history SET status = 'partial' WHERE sl_no = ?", (sl_no,))
+    conn.commit()
+    conn.close()
+
+
+def mark_session_complete(sl_no: int):
+    """Mark a session back to active after a successful scan."""
+    conn = get_connection()
+    conn.execute("UPDATE history SET status = 'active' WHERE sl_no = ?", (sl_no,))
+    conn.commit()
+    conn.close()
+
+
+def save_tool_result(sl_no: int, tool_name: str, result: str):
+    """Persist a single tool result for scan resume."""
+    conn = get_connection()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT OR REPLACE INTO tool_results (sl_no, tool_name, result, done_at) VALUES (?, ?, ?, ?)",
+        (sl_no, tool_name, str(result or "")[:20000], now))
+    conn.commit()
+    conn.close()
+
+
+def get_tool_results(sl_no: int) -> dict:
+    """Return {tool_name: result} for all completed tools in a session."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT tool_name, result FROM tool_results WHERE sl_no = ?", (sl_no,)).fetchall()
+    conn.close()
+    return {r[0]: r[1] for r in rows}
