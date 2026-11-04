@@ -43,8 +43,9 @@
 
 ## Screenshots
 
-<img width="973" height="508" alt="image" src="https://github.com/user-attachments/assets/9cdf1e92-8045-4df7-a2ff-8e116e028433" />
+> *Terminal UI powered by [Rich](https://github.com/Textualize/rich)*
 
+![ARGOS main screen](screenshots/argos-main.png)
 
 ---
 
