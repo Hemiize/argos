@@ -11,8 +11,10 @@ import subprocess
 import socket
 import re
 import ssl
+import json
+import shutil
 import datetime
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, urljoin, quote
 import requests as _requests_base
 import urllib3
 import settings
@@ -1607,4 +1609,219 @@ def run_tool_by_command(command_str: str) -> str:
     if tool not in ALLOWED_TOOLS:
         return f"[!] Tool '{parts[0]}' not permitted. Allowed: {ALLOWED_TOOLS}"
     return run_tool(parts)
+
+
+def tool_installed(name: str) -> bool:
+    """Reliable PATH check (works for tools without a --version flag)."""
+    return shutil.which(name) is not None
+
+
+def installed_exec_tools() -> dict:
+    """Return {tool: bool} availability for every tool in the exec allowlist."""
+    status = {}
+    for t in sorted(EXEC_TOOL_ALLOWLIST):
+        status[t] = True if t == "curl" else tool_installed(t)
+    return status
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NUCLEI (full integration: optional template update + severity triage)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_nuclei(target: str, update: bool = False,
+               severity: str = "critical,high,medium,low") -> str:
+    """Run nuclei against a target and triage matches by severity."""
+    if not tool_installed("nuclei"):
+        return "[!] nuclei not installed. Run setup.bat or 'scoop install nuclei'."
+    url = target if target.startswith("http") else f"http://{target}"
+
+    if update:
+        run_tool(["nuclei", "-update-templates", "-silent"], timeout=600)
+
+    out = run_tool(
+        ["nuclei", "-u", url, "-severity", severity,
+         "-jsonl", "-silent", "-nc", "-timeout", "10"],
+        timeout=900,
+    )
+
+    buckets = {"critical": [], "high": [], "medium": [], "low": [], "info": []}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        info    = o.get("info", {}) or {}
+        sev     = (info.get("severity") or "info").lower()
+        name    = info.get("name") or o.get("template-id", "?")
+        matched = o.get("matched-at") or o.get("host", "")
+        buckets.setdefault(sev, []).append(f"{name}  ->  {matched}")
+
+    total = sum(len(v) for v in buckets.values())
+    if total == 0:
+        if out and out.strip().startswith("[!]"):
+            return out
+        return "[nuclei scan]\n  No template matches."
+    lines = [f"[nuclei scan] {total} match(es)"]
+    for sev in ("critical", "high", "medium", "low", "info"):
+        if buckets[sev]:
+            lines.append(f"\n  [{sev.upper()}] ({len(buckets[sev])})")
+            for item in buckets[sev][:40]:
+                lines.append(f"    - {item}")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WEB-APPLICATION TESTING (spider, parameter/form discovery, API, JWT)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_spider(target: str, max_pages: int = 40) -> str:
+    """Same-origin crawl; collect reachable URLs, parameters and forms."""
+    try:
+        from bs4 import BeautifulSoup
+    except Exception as e:
+        return f"[!] Spider needs beautifulsoup4: {e}"
+
+    base   = target if target.startswith("http") else f"http://{target}"
+    origin = urlparse(base).netloc
+    ua     = {"User-Agent": settings.get_user_agent()}
+    seen, queue, params, forms = set(), [base], set(), []
+    count = 0
+
+    while queue and count < max_pages:
+        url = queue.pop(0).split("#")[0]
+        if url in seen:
+            continue
+        seen.add(url)
+        try:
+            r = requests.get(url, headers=ua, timeout=10)
+        except Exception:
+            continue
+        count += 1
+        for p in parse_qs(urlparse(url).query):
+            params.add(p)
+        if "html" not in r.headers.get("Content-Type", ""):
+            continue
+        try:
+            soup = BeautifulSoup(r.text, "html.parser")
+        except Exception:
+            continue
+        for a in soup.find_all("a", href=True):
+            nxt = urljoin(url, a["href"]).split("#")[0]
+            if (nxt.startswith("http") and urlparse(nxt).netloc == origin
+                    and nxt not in seen and len(queue) < max_pages * 3):
+                queue.append(nxt)
+        for fm in soup.find_all("form"):
+            action = urljoin(url, fm.get("action", "") or url)
+            method = (fm.get("method") or "GET").upper()
+            fields = [i.get("name") for i in fm.find_all(["input", "textarea", "select"])
+                      if i.get("name")]
+            forms.append(f"{method} {action}  fields={fields}")
+            for fld in fields:
+                params.add(fld)
+
+    lines = [f"[Spider] crawled {count} page(s) on {origin}"]
+    lines.append(f"\n  URLs discovered ({len(seen)}):")
+    for u in list(seen)[:50]:
+        lines.append(f"    {u}")
+    if params:
+        lines.append(f"\n  Parameters ({len(params)}): " + ", ".join(sorted(params)))
+    if forms:
+        lines.append(f"\n  Forms ({len(forms)}):")
+        for fm in forms[:25]:
+            lines.append(f"    {fm}")
+    return "\n".join(lines)
+
+
+def run_api_discovery(target: str) -> str:
+    """Probe common API/doc endpoints and test GraphQL introspection."""
+    base = (target if target.startswith("http") else f"http://{target}").rstrip("/")
+    ua   = {"User-Agent": settings.get_user_agent()}
+    PATHS = [
+        "/swagger.json", "/swagger/v1/swagger.json", "/openapi.json",
+        "/v2/api-docs", "/api-docs", "/swagger-ui.html", "/api/swagger.json",
+        "/.well-known/openid-configuration", "/api", "/api/v1",
+        "/graphql", "/playground", "/altair", "/api/graphql",
+        "/robots.txt", "/sitemap.xml", "/.well-known/security.txt",
+    ]
+    findings = []
+    for path in PATHS:
+        try:
+            r = requests.get(base + path, headers=ua, timeout=8, allow_redirects=True)
+        except Exception:
+            continue
+        if r.status_code < 400 and r.text.strip():
+            ctype = r.headers.get("Content-Type", "").split(";")[0]
+            findings.append(f"  [{r.status_code}] {path}  ({ctype}, {len(r.text)} bytes)")
+
+    gql = []
+    for gpath in ("/graphql", "/api/graphql"):
+        try:
+            r = requests.post(base + gpath, json={"query": "{__schema{types{name}}}"},
+                              headers=ua, timeout=8)
+            if r.status_code < 400 and "__schema" in r.text:
+                gql.append(f"  [CRITICAL] GraphQL introspection ENABLED at {gpath}")
+        except Exception:
+            pass
+
+    lines = ["[API Discovery]"]
+    if findings:
+        lines.append("\n  Reachable endpoints:")
+        lines += findings
+    if gql:
+        lines.append("")
+        lines += gql
+    if len(lines) == 1:
+        lines.append("  No common API/doc endpoints found.")
+    return "\n".join(lines)
+
+
+def run_jwt_analysis(target: str) -> str:
+    """Find JWTs in headers/cookies/body; decode header+claims and flag weak alg."""
+    import base64 as _b64
+    base = target if target.startswith("http") else f"http://{target}"
+    ua   = {"User-Agent": settings.get_user_agent()}
+    try:
+        r = requests.get(base, headers=ua, timeout=10)
+    except Exception as e:
+        return f"[!] JWT analysis: request failed: {e}"
+
+    haystack = " ".join(f"{k}: {v}" for k, v in r.headers.items()) + " " + r.text
+    jwts = re.findall(r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*", haystack)
+    if not jwts:
+        return "[JWT Analysis] No JWT found in headers/cookies/body."
+
+    def _dec(seg):
+        seg += "=" * (-len(seg) % 4)
+        try:
+            return json.loads(_b64.urlsafe_b64decode(seg))
+        except Exception:
+            return {}
+
+    lines = [f"[JWT Analysis] {len(set(jwts))} token(s) found"]
+    for tok in list(dict.fromkeys(jwts))[:5]:
+        parts = tok.split(".")
+        hdr   = _dec(parts[0])
+        claims = _dec(parts[1]) if len(parts) > 1 else {}
+        alg   = str(hdr.get("alg", "?"))
+        lines.append(f"\n  token: {tok[:32]}…")
+        lines.append(f"    header : {hdr}")
+        lines.append(f"    claims : {claims}")
+        if alg.lower() == "none":
+            lines.append("    [CRITICAL] alg=none — signature can be stripped!")
+        elif alg.upper().startswith("HS"):
+            lines.append("    [INFO] HMAC alg — test for a weak/guessable secret.")
+    return "\n".join(lines)
+
+
+def run_webapp_scan(target: str) -> dict:
+    """Run all web-application probes in parallel. Returns {name: result}."""
+    tasks = {
+        "spider":        lambda: run_spider(target),
+        "api_discovery": lambda: run_api_discovery(target),
+        "jwt_analysis":  lambda: run_jwt_analysis(target),
+    }
+    return _run_parallel(tasks, max_workers=3)
 
