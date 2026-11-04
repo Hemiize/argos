@@ -24,9 +24,11 @@
 | **CVE enrichment** | NVD API v2 with 7-day local SQLite cache |
 | **Deface detection** | Checks defacement signatures, shell paths, WebDAV write access |
 | **Payload execution** | Allowlisted exploit runner (nmap, sqlmap, nikto, curl, dirb…) |
+| **AI exploit analysis** | LLM interprets raw tool output — shows success/fail + verdict + evidence |
 | **PDF/HTML/JSON/Markdown export** | Professional reports for each scan session |
 | **Follow-up chat** | Interactive Q&A with the LLM about scan results |
-| **Session management** | SQLite history, diff between sessions, edit/delete entries |
+| **Session management** | SQLite history, diff between sessions, resume interrupted scans |
+| **Proxy & Auth support** | Route via Burp/ZAP, inject cookies or HTTP Basic Auth |
 | **Cross-platform** | Windows (PowerShell) + Linux — no cloud dependency |
 
 ---
@@ -88,6 +90,29 @@ pip install -r requirements.txt
 
 ---
 
+## Recommended Models
+
+> **ARGOS performs significantly better with uncensored or abliterated models.**
+> Standard safety-tuned models often refuse to generate exploit commands, suggest payloads, or describe vulnerabilities in detail — which is exactly what ARGOS needs to be useful.
+
+### Recommended
+
+| Model | Backend | Notes |
+|---|---|---|
+| **Llama-3-based abliterated** (e.g. `Llama-3.1-8B-Lexi-Uncensored`) | llama.cpp / Ollama | Great balance of speed and quality |
+| **Mistral-based uncensored** (e.g. `Mistral-7B-Instruct-v0.2-Uncensored`) | llama.cpp / Ollama | Fast, good for structured JSON output |
+| **WizardLM-uncensored** | llama.cpp / Ollama | Strong at following complex instructions |
+| **Any abliterated Qwen2.5 / DeepSeek** | llama.cpp / Ollama | Excellent reasoning, handles long recon data well |
+
+> **What is an abliterated model?**
+> Abliteration removes the refusal direction from the model's weights without fine-tuning, preserving general capability while eliminating safety restrictions.
+> Find models on [Hugging Face](https://huggingface.co/) — search for `uncensored`, `abliterated`, or `lexi`.
+
+### Not recommended
+Censored models like default `llama3`, `mistral`, or `phi` will refuse to suggest exploits, write payloads, or analyse vulnerabilities — rendering most of ARGOS's AI features useless.
+
+---
+
 ## Configuration
 
 Edit `config.py` to match your LLM setup:
@@ -119,6 +144,21 @@ source venv/bin/activate
 python argos.py
 ```
 
+### CLI arguments
+```bash
+python argos.py --target example.com --depth 2
+python argos.py --target 192.168.1.1 --depth 3 --proxy http://127.0.0.1:8080
+python argos.py --target example.com --cookie "session=abc123" --auth admin:pass
+```
+
+| Argument | Description |
+|---|---|
+| `--target`, `-t` | Target IP or domain (skips the prompt) |
+| `--depth`, `-d` | Scan depth: `1`=standard `2`=deep `3`=ultra |
+| `--proxy`, `-p` | Proxy URL for all requests (e.g. Burp Suite) |
+| `--cookie` | Raw Cookie header for authenticated scans |
+| `--auth` | HTTP Basic Auth as `user:pass` |
+
 ### Starting your LLM server
 
 **llama.cpp:**
@@ -129,7 +169,7 @@ llama-server -m your-model.gguf --port 8080 -c 16384
 **Ollama:**
 ```bash
 ollama serve
-ollama pull llama3
+ollama run llama3-uncensored
 ```
 
 ---
@@ -140,17 +180,18 @@ ollama pull llama3
 [1] New Scan          — run standard / deep / ultra scan against a target
 [2] View History      — browse past sessions, re-run exploits, export reports
 [3] Compare Sessions  — diff two scans to track remediation progress
-[4] Settings          — switch backend, model, user-agent, CVE cache
+[4] Settings          — switch backend, model, user-agent, proxy, auth, CVE cache
 [5] Exit
 ```
 
 ### Scan flow
-1. Enter target IP or domain
-2. Choose depth (1 / 2 / 3)
-3. ARGOS runs all recon tools in parallel with a live progress bar
-4. LLM analyses raw scan data with live token counter
-5. Results displayed with severity-coloured panels
-6. Optionally: execute payloads, chat about results, export report
+1. Enter target IP or domain (or pass via `--target`)
+2. Target reachability is verified before scanning begins
+3. Choose depth (1 / 2 / 3)
+4. ARGOS runs all recon tools in parallel with a live `[X/N]` progress counter
+5. LLM analyses raw scan data with live token counter
+6. Results displayed with severity-coloured panels
+7. Optionally: execute payloads with AI-interpreted result, chat about results, export report
 
 ---
 
@@ -160,6 +201,19 @@ After a scan, ARGOS offers to execute LLM-suggested exploits via an **allowliste
 
 ```
 Allowed tools: nmap, sqlmap, nikto, dirb, gobuster, wfuzz, hydra, curl, whatweb, ffuf, nuclei
+```
+
+The local LLM then interprets the raw tool output and displays a clean result:
+
+```
+╭─── SQL Injection Test ────────────────────────────────────────────╮
+│ ✔  ERFOLG                                                         │
+│                                                                    │
+│ Ergebnis  : Parameter ?id is vulnerable to UNION-based SQLi       │
+│ Beweis    : "you have an error in your SQL syntax"                │
+│ Severity  : CRITICAL                                              │
+│ Next step : sqlmap -u "…" --dbs --batch                           │
+╰────────────────────────────────────────────────────────────────────╯
 ```
 
 - `curl` commands are routed through Python `requests` (no curl binary needed on Windows)
@@ -186,13 +240,13 @@ From **View History → [session] → Export**:
 ## Project Structure
 
 ```
-argos.py        — main entry point, menu logic
-config.py       — paths, URLs, timeouts
-settings.py     — user settings (backend, model, user-agent)
-llm.py          — LLM bridge (llama.cpp + Ollama, streaming)
-tools.py        — 27 recon tool runners
+argos.py        — main entry point, menu logic, CLI args
+config.py       — paths, URLs, timeouts, default scan depth
+settings.py     — user settings (backend, model, proxy, auth, wordlists)
+llm.py          — LLM bridge (llama.cpp + Ollama, streaming, exploit analysis)
+tools.py        — 27 recon tool runners, _SessionFactory, validate_target
 ui.py           — Rich terminal UI components
-db.py           — SQLite session database
+db.py           — SQLite session database, scan resume
 cve.py          — NVD CVE enrichment
 export.py       — PDF, HTML, JSON, Markdown report generation
 search.py       — DuckDuckGo web search helper
