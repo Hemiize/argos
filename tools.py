@@ -12,15 +12,18 @@ import re
 import ssl
 import datetime
 import requests
+import urllib3
 import settings
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 IS_WINDOWS = platform.system() == "Windows"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # BASE SUBPROCESS RUNNER
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_tool(command: list, timeout: int = 120) -> str:
     kw = {}
@@ -49,9 +52,9 @@ def _tool_available(name: str) -> bool:
         return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # NMAP
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_nmap(target: str) -> str:
     return run_tool(["nmap", "-sV", "-sC", "-T4", "--open", target], timeout=180)
@@ -59,7 +62,9 @@ def run_nmap(target: str) -> str:
 
 def run_nmap_deep(target: str) -> str:
     """Full port scan + NSE vuln/http/ssl scripts."""
+    # Pass 1: full port discovery
     full = run_tool(["nmap", "-p-", "-T4", "--open", "-oG", "-", target], timeout=600)
+    # Pass 2: service + vulnerability scripts on common range
     vuln = run_tool([
         "nmap", "-sV", "--script",
         "vuln,http-title,http-methods,http-headers,ssl-cert,ssl-enum-ciphers",
@@ -68,9 +73,9 @@ def run_nmap_deep(target: str) -> str:
     return f"[FULL PORT SCAN]\n{full}\n\n[VULN + SERVICE SCRIPTS]\n{vuln}"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # WHOIS
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _whois_native(target: str) -> str:
     return run_tool(["whois", target], timeout=30)
@@ -96,9 +101,9 @@ def run_whois(target: str) -> str:
     return _whois_python(target)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# WEB TECH FINGERPRINT
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# WEB TECH FINGERPRINT  (whatweb replacement)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _TECH_PATTERNS = {
     "WordPress":  [r"wp-content", r"wordpress"],
@@ -120,10 +125,12 @@ _TECH_PATTERNS = {
 
 
 def run_whatweb(target: str) -> str:
+    # Try native whatweb on Linux
     if not IS_WINDOWS and _tool_available("whatweb"):
         result = run_tool(["whatweb", "-a", "3", target], timeout=60)
         if "[!] Tool not found" not in result:
             return result
+    # Python fallback
     ua = settings.get_user_agent()
     findings = []
     for scheme in ("https", "http"):
@@ -156,11 +163,12 @@ def run_whatweb(target: str) -> str:
     return "\n".join(findings) if findings else "[!] Could not connect."
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # HTTP HEADERS
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_curl_headers(target: str) -> str:
+    # Try native curl on Linux
     if not IS_WINDOWS and _tool_available("curl"):
         out = run_tool(["curl", "-sI", "--max-time", "10", "--location",
                         f"http://{target}"], timeout=20)
@@ -168,6 +176,7 @@ def run_curl_headers(target: str) -> str:
                               "-k", f"https://{target}"], timeout=20)
         if "[!] Tool not found" not in out:
             return f"[HTTP Headers]\n{out}\n\n[HTTPS Headers]\n{https_out}"
+    # Python fallback
     ua = settings.get_user_agent()
     results = []
     for scheme in ("https", "http"):
@@ -175,7 +184,7 @@ def run_curl_headers(target: str) -> str:
         try:
             resp = requests.head(url, timeout=10, allow_redirects=True,
                                  headers={"User-Agent": ua}, verify=False)
-            block = f"[{scheme.upper()} Headers — HTTP {resp.status_code}]\n"
+            block = f"[{scheme.upper()} Headers â€” HTTP {resp.status_code}]\n"
             for k, v in resp.headers.items():
                 block += f"  {k}: {v}\n"
             results.append(block)
@@ -186,9 +195,9 @@ def run_curl_headers(target: str) -> str:
     return "\n".join(results)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # DNS / DIG
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _dig_native(target: str) -> str:
     parts = []
@@ -226,15 +235,16 @@ def run_dig(target: str) -> str:
     return _dig_python(target)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # NIKTO
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_nikto(target: str) -> str:
     if not IS_WINDOWS:
         result = run_tool(["nikto", "-h", target, "-nointeractive"], timeout=300)
         if "[!] Tool not found" not in result:
             return result
+    # Windows: try WSL or Docker
     wsl = run_tool(["wsl", "nikto", "-h", target, "-nointeractive"], timeout=300)
     if "[!] Tool not found" not in wsl:
         return wsl
@@ -246,17 +256,18 @@ def run_nikto(target: str) -> str:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # DEEP SCAN EXTRAS
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_security_headers(target: str) -> str:
     """Full security headers audit with graded findings."""
     ua = settings.get_user_agent()
 
     HEADERS_SPEC = [
+        # (header-name, label, severity-if-missing, note-if-missing)
         ("strict-transport-security",   "HSTS",                 "HIGH",   "Site does not enforce HTTPS"),
-        ("content-security-policy",     "Content-Security-Policy","HIGH", "No CSP — XSS risk"),
+        ("content-security-policy",     "Content-Security-Policy","HIGH", "No CSP â€” XSS risk"),
         ("x-frame-options",             "X-Frame-Options",      "MEDIUM", "Clickjacking risk"),
         ("x-content-type-options",      "X-Content-Type-Options","LOW",   "MIME sniffing allowed"),
         ("referrer-policy",             "Referrer-Policy",       "LOW",   "Full URL leaked in referrer"),
@@ -271,23 +282,26 @@ def run_security_headers(target: str) -> str:
             resp = requests.get(url, headers={"User-Agent": ua}, timeout=15,
                                 allow_redirects=True, verify=False)
             hdrs = {k.lower(): v for k, v in resp.headers.items()}
-            results.append(f"[Security Headers Audit — {scheme.upper()} {resp.status_code}]")
+            results.append(f"[Security Headers Audit â€” {scheme.upper()} {resp.status_code}]")
 
             for name, label, missing_sev, missing_note in HEADERS_SPEC:
                 if name in hdrs:
                     val = hdrs[name][:120]
+                    # Flag dangerous CORS wildcard
                     if name == "access-control-allow-origin" and val.strip() == "*":
-                        results.append(f"  [WARN  ] {label}: * (wildcard — any origin allowed)")
+                        results.append(f"  [WARN  ] {label}: * (wildcard â€” any origin allowed)")
                     else:
                         results.append(f"  [PRESENT] {label}: {val}")
                 else:
-                    results.append(f"  [MISSING/{missing_sev}] {label} — {missing_note}")
+                    results.append(f"  [MISSING/{missing_sev}] {label} â€” {missing_note}")
 
+            # Extra info headers
             srv     = resp.headers.get("Server", "")
             powered = resp.headers.get("X-Powered-By", "")
             if srv:     results.append(f"  [INFO  ] Server header exposed: {srv}")
             if powered: results.append(f"  [INFO  ] X-Powered-By exposed: {powered}")
 
+            # Cookie flags
             for ck_name, ck in resp.cookies.items():
                 flags = []
                 if not ck.has_nonstandard_attr("HttpOnly"): flags.append("missing HttpOnly")
@@ -337,8 +351,9 @@ def run_ssl_check(target: str) -> str:
             f"  Cipher:   {cipher[0] if cipher else 'N/A'}",
         ]
 
+        # Flag weak protocols
         if protocol in ("TLSv1", "TLSv1.1", "SSLv3"):
-            lines.append(f"  [WEAK PROTOCOL] {protocol} is deprecated — HIGH risk")
+            lines.append(f"  [WEAK PROTOCOL] {protocol} is deprecated â€” HIGH risk")
 
         return "\n".join(lines)
 
@@ -354,30 +369,41 @@ def run_subdomain_enum(target: str) -> str:
     """Check common subdomains via DNS resolution."""
     base = re.sub(r"^www\.", "", target).strip()
     if base.count(".") < 1:
-        return "[Subdomain Enum]\n  Not a domain — skipping."
+        return "[Subdomain Enum]\n  Not a domain â€” skipping."
 
     SUBS = [
+        # Common web
         "www", "www2", "web", "app", "apps", "mobile", "m",
+        # Mail
         "mail", "smtp", "pop", "pop3", "imap", "mx", "mx1", "mx2", "webmail",
+        # Network
         "ftp", "sftp", "ns", "ns1", "ns2", "dns", "vpn", "proxy", "gateway",
+        # Dev / ops
         "dev", "dev1", "dev2", "staging", "stage", "test", "testing",
         "qa", "uat", "sandbox", "preview", "demo", "beta", "alpha",
         "ci", "cd", "build", "deploy",
+        # Admin
         "admin", "administrator", "manage", "management",
         "panel", "control", "cpanel", "plesk", "dashboard",
+        # API / services
         "api", "api2", "rest", "graphql", "services",
         "auth", "oauth", "login", "sso", "id", "identity",
+        # Content / CDN
         "blog", "shop", "store", "cdn", "static", "media", "assets",
         "images", "files", "upload", "downloads",
+        # Infra / monitoring
         "git", "gitlab", "github", "bitbucket", "svn",
         "jenkins", "ci", "travis", "circleci",
         "jira", "confluence", "wiki", "docs", "help", "support",
         "monitor", "monitoring", "grafana", "prometheus", "kibana",
         "elastic", "elasticsearch", "logstash",
         "k8s", "kubernetes", "docker", "registry",
+        # Business
         "portal", "secure", "internal", "intranet", "extranet",
         "careers", "jobs", "news", "press", "ir",
+        # DB / backend
         "db", "database", "mysql", "postgres", "redis", "mongo",
+        # Misc
         "backup", "old", "legacy", "archive",
     ]
 
@@ -389,19 +415,20 @@ def run_subdomain_enum(target: str) -> str:
             try:
                 answers = dns.resolver.resolve(fqdn, "A", lifetime=3)
                 ips = [str(r) for r in answers]
-                found.append(f"  [FOUND] {fqdn} → {', '.join(ips)}")
+                found.append(f"  [FOUND] {fqdn} â†’ {', '.join(ips)}")
             except Exception:
                 pass
     except ImportError:
+        # fallback: socket
         for sub in SUBS[:10]:
             fqdn = f"{sub}.{base}"
             try:
                 ip = socket.gethostbyname(fqdn)
-                found.append(f"  [FOUND] {fqdn} → {ip}")
+                found.append(f"  [FOUND] {fqdn} â†’ {ip}")
             except Exception:
                 pass
 
-    header = f"[Subdomain Enumeration — {base}]"
+    header = f"[Subdomain Enumeration â€” {base}]"
     return header + "\n" + ("\n".join(found) if found else "  No common subdomains found.")
 
 
@@ -410,43 +437,58 @@ def run_dir_enum(target: str) -> str:
     ua = settings.get_user_agent()
 
     PATHS = [
+        # Robots / sitemaps / security
         "/robots.txt", "/sitemap.xml", "/sitemap_index.xml",
         "/.well-known/security.txt", "/.well-known/change-password",
+        # Git / VCS exposure
         "/.git/HEAD", "/.git/config", "/.git/COMMIT_EDITMSG",
         "/.svn/entries", "/.hg/", "/.bzr/",
+        # Environment / secrets
         "/.env", "/.env.local", "/.env.production", "/.env.backup",
         "/.env.dev", "/.env.example", "/config.env",
+        # Backup files
         "/backup", "/backup.zip", "/backup.sql", "/backup.tar.gz",
         "/db_backup.sql", "/dump.sql", "/site_backup.zip",
         "/old/", "/bak/", "/backup/",
+        # Admin panels
         "/admin", "/administrator", "/admin/login", "/admin/dashboard",
         "/manager", "/management", "/cpanel", "/cPanel",
         "/plesk", "/directadmin", "/webmin", "/ispconfig",
+        # Auth pages
         "/login", "/signin", "/signup", "/register", "/logout",
         "/auth", "/oauth", "/sso", "/saml",
+        # WordPress
         "/wp-admin", "/wp-login.php", "/wp-config.php", "/wp-config.php.bak",
         "/wp-content/debug.log", "/xmlrpc.php", "/readme.html",
         "/wp-json/wp/v2/users",
+        # Other CMS
         "/administrator/index.php", "/joomla.xml", "/configuration.php",
         "/user/login", "/CHANGELOG.txt", "/sites/default/settings.php",
+        # PHP info / debug
         "/phpinfo.php", "/info.php", "/test.php", "/debug.php",
         "/php.php", "/php_info.php",
+        # Config files
         "/config.php", "/config.xml", "/config.json", "/config.yml",
         "/app/config.php", "/settings.php", "/settings.py", "/settings.yml",
         "/web.config", "/.htaccess", "/nginx.conf",
+        # API endpoints
         "/api", "/api/v1", "/api/v2", "/api/v3",
         "/api/v1/users", "/api/v1/admin",
         "/graphql", "/graphiql", "/__graphql",
         "/swagger", "/swagger-ui.html", "/swagger.json",
         "/openapi.json", "/openapi.yaml", "/api-docs",
+        # Debug / monitoring
         "/console", "/debug", "/trace",
         "/health", "/healthz", "/health/live", "/health/ready",
         "/status", "/metrics", "/actuator", "/actuator/health",
         "/actuator/env", "/actuator/mappings",
         "/.DS_Store",
+        # Database / tools
         "/phpmyadmin", "/phpmyadmin/", "/mysql", "/adminer.php",
         "/myadmin", "/pma/", "/dbadmin",
+        # Cloud metadata
         "/latest/meta-data", "/opc/v1/instance",
+        # Misc sensitive
         "/server-status", "/server-info",
         "/WEB-INF/web.xml", "/WEB-INF/classes/",
         "/elmah.axd", "/trace.axd",
@@ -490,9 +532,9 @@ def run_dir_enum(target: str) -> str:
     return header + "\n" + ("\n".join(found) if found else "  No interesting paths found.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # RECON PIPELINES
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_banner_grab(target: str) -> str:
     """Grab banners from sensitive/interesting TCP ports."""
@@ -820,12 +862,14 @@ def run_deface_detect(target: str) -> str:
                                 timeout=15, verify=False, allow_redirects=True)
             html_lower = resp.text.lower()
 
+            # Check for active defacement patterns
             hits = [sig for sig in DEFACEMENT_SIGS if sig in html_lower]
             if hits:
                 findings.append(f"[CRITICAL] SITE MAY BE DEFACED — signatures found: {', '.join(hits[:5])}")
             else:
                 findings.append("[OK] No common defacement signatures found in homepage HTML.")
 
+            # Title check for suspicious content
             title_m = re.search(r"<title[^>]*>(.*?)</title>", resp.text, re.IGNORECASE | re.DOTALL)
             if title_m:
                 title = title_m.group(1).strip()[:100]
@@ -835,6 +879,7 @@ def run_deface_detect(target: str) -> str:
                 else:
                     findings.append(f"[INFO] Page title: {title}")
 
+            # Check response size anomaly (very small page could indicate defacement)
             size = len(resp.text)
             if size < 500 and resp.status_code == 200:
                 findings.append(f"[WARN] Homepage is unusually small ({size} bytes) — possible defacement or placeholder")
@@ -843,6 +888,7 @@ def run_deface_detect(target: str) -> str:
         except Exception as e:
             findings.append(f"[Error fetching {scheme}] {e}")
 
+    # Check defaceability indicators
     findings.append("")
     findings.append("[Defaceability Assessment]")
     for scheme in ("https", "http"):
@@ -863,6 +909,7 @@ def run_deface_detect(target: str) -> str:
             else:
                 findings.append("  No obvious shell/file-manager endpoints found.")
 
+            # Check WebDAV (PUT method)
             try:
                 r = requests.options(base_url, headers={"User-Agent": ua}, timeout=8,
                                      verify=False, allow_redirects=False)
@@ -874,6 +921,7 @@ def run_deface_detect(target: str) -> str:
             except Exception:
                 pass
 
+            # Check exposed .git
             try:
                 r = requests.get(base_url + "/.git/HEAD", headers={"User-Agent": ua},
                                  timeout=5, verify=False, allow_redirects=False)
@@ -906,6 +954,7 @@ def run_sqli_basic(target: str) -> str:
         try:
             resp = requests.get(base_url, headers={"User-Agent": ua},
                                 timeout=10, verify=False, allow_redirects=True)
+            # Collect param-bearing links from homepage
             param_urls = set()
             for m in re.finditer(r'href=["\']([^"\']+\?[^"\']+)["\']', resp.text):
                 raw = m.group(1)
@@ -914,6 +963,7 @@ def run_sqli_basic(target: str) -> str:
                 param_urls.add(raw)
 
             if not param_urls:
+                # Try common param patterns
                 for suffix in ["/?id=1", "/?page=1", "/?cat=1", "/?q=test", "/?search=test"]:
                     param_urls.add(base_url + suffix)
 
@@ -1138,6 +1188,7 @@ def run_info_disclosure(target: str) -> str:
         (r'(?i)(debug|todo|fixme|hack|xxx|password|secret)\s*[:=]', "Debug comment/todo"),
     ]
     findings = []
+    # Check for error page disclosure
     ERROR_PATHS = ["/nonexistent-page-argos-test", "/../../../etc/passwd",
                    "/index.php?id=", "/index.asp?id="]
 
@@ -1152,6 +1203,7 @@ def run_info_disclosure(target: str) -> str:
                 matches = re.findall(pattern, resp.text)
                 if matches:
                     sample = str(matches[0])[:60] if matches else ""
+                    # Skip noisy IP pattern if too many matches
                     if label == "IP address in page source" and len(matches) > 5:
                         findings.append(f"  [INFO] {label}: {len(matches)} occurrences")
                     elif label != "Base64-encoded data (possible secrets)":
@@ -1160,6 +1212,7 @@ def run_info_disclosure(target: str) -> str:
             if hit_count == 0:
                 findings.append("  No obvious sensitive data patterns in homepage.")
 
+            # Probe 404 error page for server info
             try:
                 r404 = requests.get(base_url + ERROR_PATHS[0], headers={"User-Agent": ua},
                                     timeout=6, verify=False)
@@ -1201,6 +1254,7 @@ def run_path_traversal(target: str) -> str:
         try:
             requests.head(base_url, timeout=5, verify=False)
             hits = []
+            # Path traversal in URL
             for payload in PAYLOADS[:3]:
                 try:
                     r = requests.get(base_url + payload, headers={"User-Agent": ua},
@@ -1209,6 +1263,7 @@ def run_path_traversal(target: str) -> str:
                         hits.append(f"  [CRITICAL] Path traversal via URL: {payload}")
                 except Exception:
                     pass
+            # LFI via GET params
             for param in LFI_PARAMS[:6]:
                 for payload in PAYLOADS[:2]:
                     test_url = f"{base_url}/?{param}={payload}"
@@ -1269,9 +1324,9 @@ ULTRA_TOOL_NAMES = DEEP_TOOL_NAMES + [
 ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # PARALLEL RUNNER
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _run_parallel(tasks: dict, max_workers: int = 5, on_done=None) -> dict:
     """Run {name: callable} in parallel. Calls on_done(name) after each finishes."""
@@ -1301,7 +1356,9 @@ def run_default_recon(target: str, on_done=None) -> dict:
 
 
 def run_deep_recon(target: str, on_done=None) -> dict:
+    # Phase 1: standard tools
     results = run_default_recon(target, on_done=on_done)
+    # Phase 2: all deep tools in parallel
     deep_tasks = {
         "nmap_deep":         lambda: run_nmap_deep(target),
         "sec_headers":       lambda: run_security_headers(target),
@@ -1322,7 +1379,9 @@ def run_deep_recon(target: str, on_done=None) -> dict:
 
 
 def run_ultra_recon(target: str, on_done=None) -> dict:
+    # Phase 1+2: everything from deep scan
     results = run_deep_recon(target, on_done=on_done)
+    # Phase 3: ultra-aggressive tools in parallel
     ultra_tasks = {
         "nmap_ultra":       lambda: run_nmap_ultra(target),
         "deface_detect":    lambda: run_deface_detect(target),
@@ -1418,6 +1477,7 @@ def run_suggested_exploit(exploit: dict, target: str) -> str:
     if not payload:
         return "[!] No payload/command specified."
 
+    # Substitute common target placeholders
     for placeholder in ["{target}", "TARGET", "<TARGET>", "target.com",
                          "example.com", "DOMAIN", "<domain>", "<host>"]:
         payload = payload.replace(placeholder, target)
@@ -1430,6 +1490,7 @@ def run_suggested_exploit(exploit: dict, target: str) -> str:
     except Exception as e:
         return f"[!] Could not parse command: {e}"
 
+    # Ensure the tool is the first element
     first = args[0].lower().split("/")[-1].split("\\")[-1] if args else ""
     if first != tool:
         args = [tool] + args
@@ -1445,3 +1506,4 @@ def run_tool_by_command(command_str: str) -> str:
     if tool not in ALLOWED_TOOLS:
         return f"[!] Tool '{parts[0]}' not permitted. Allowed: {ALLOWED_TOOLS}"
     return run_tool(parts)
+
