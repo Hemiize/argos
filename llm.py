@@ -454,3 +454,67 @@ def check_llm_online() -> bool:
         raise
     except Exception:
         return False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPLOIT RESULT ANALYSER
+# ─────────────────────────────────────────────────────────────────────────────
+
+_EXPLOIT_ANALYSIS_PROMPT = """Analyze the output of a security exploit/probe attempt and determine whether it succeeded.
+
+Exploit name : {exploit_name}
+Tool used    : {tool_used}
+Payload      : {payload}
+Raw output   :
+{output}
+
+Reply with ONLY a valid JSON object (no markdown fences, no extra text):
+{{
+  "success": true,
+  "verdict": "one-line summary",
+  "evidence": "most relevant line(s) from the output",
+  "severity": "critical",
+  "recommendation": "what this means / next step"
+}}
+
+Rules:
+- success: true = vulnerability confirmed, false = blocked / not vulnerable, "partial" = ambiguous
+- severity: one of critical / high / medium / low / info
+- verdict and recommendation each under 120 characters
+"""
+
+
+def analyze_exploit_result(exploit: dict, raw_output: str) -> dict:
+    """
+    Ask the active LLM to interpret exploit output.
+    Returns dict with keys: success, verdict, evidence, severity, recommendation.
+    Returns {} on failure (LLM offline or parse error).
+    """
+    prompt = _EXPLOIT_ANALYSIS_PROMPT.format(
+        exploit_name=exploit.get("exploit_name", "unknown"),
+        tool_used=exploit.get("tool_used", "unknown"),
+        payload=(exploit.get("payload") or "")[:300],
+        output=raw_output[:3000],
+    )
+    messages = [
+        {"role": "system",
+         "content": "You are a security analyst. Output ONLY valid JSON, nothing else."},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        raw = ask_llm(messages)
+        raw = raw.strip()
+        # Strip optional markdown fences
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+        data = json.loads(raw)
+        return {
+            "success":        data.get("success", False),
+            "verdict":        str(data.get("verdict", ""))[:200],
+            "evidence":       str(data.get("evidence", ""))[:400],
+            "severity":       str(data.get("severity", "info")).lower(),
+            "recommendation": str(data.get("recommendation", ""))[:200],
+        }
+    except Exception:
+        return {}
+
