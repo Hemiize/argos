@@ -5,20 +5,68 @@ Recon tool runners. Pipelines use ThreadPoolExecutor for parallelism.
 on_done(tool_name) callback enables live progress UI in argos.py.
 """
 
+import os
 import platform
 import subprocess
 import socket
 import re
 import ssl
 import datetime
-import requests
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+import requests as _requests_base
 import urllib3
 import settings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+
+class _SessionFactory:
+    """Transparent wrapper around requests that injects proxy/auth/verify from settings."""
+    def _s(self):
+        sess = _requests_base.Session()
+        sess.verify = False
+        p = settings.get_proxy()
+        if p:
+            sess.proxies.update({"http": p, "https": p})
+        c = settings.get_auth_cookie()
+        if c:
+            sess.headers["Cookie"] = c
+        b = settings.get_basic_auth()
+        if b:
+            sess.auth = (b["user"], b["password"])
+        return sess
+    def get(self, url, **kw):        kw.pop("verify", None); return self._s().get(url, **kw)
+    def head(self, url, **kw):       kw.pop("verify", None); return self._s().head(url, **kw)
+    def post(self, url, **kw):       kw.pop("verify", None); return self._s().post(url, **kw)
+    def request(self, m, url, **kw): kw.pop("verify", None); return self._s().request(m, url, **kw)
+
+
+requests = _SessionFactory()
+
 IS_WINDOWS = platform.system() == "Windows"
+
+
+def validate_target(target: str) -> tuple:
+    """Return (ok: bool, message: str). Checks DNS + at least one open port."""
+    domain = target.split(":")[0].strip()
+    if not domain:
+        return False, "Empty target."
+    # Try to resolve
+    try:
+        ip = socket.gethostbyname(domain)
+    except socket.gaierror:
+        return False, f"Cannot resolve '{domain}' — check hostname or DNS."
+    # Try common ports
+    for port in (443, 80, 22, 8080, 8443):
+        try:
+            sock = socket.create_connection((domain, port), timeout=5)
+            sock.close()
+            return True, f"{domain} → {ip} (port {port} reachable)"
+        except Exception:
+            pass
+    # Resolved but no open ports — still usable for recon
+    return True, f"{domain} → {ip} (resolved; no common port open yet)"
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -336,7 +384,7 @@ def run_ssl_check(target: str) -> str:
         if not_after:
             try:
                 exp_date  = datetime.datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
-                days_left = (exp_date - datetime.datetime.utcnow()).days
+                days_left = (exp_date - datetime.datetime.now()).days
                 expiry_note = f"  [{'EXPIRED' if days_left < 0 else f'{days_left} days left'}]"
             except Exception:
                 pass
@@ -381,7 +429,7 @@ def run_subdomain_enum(target: str) -> str:
         # Dev / ops
         "dev", "dev1", "dev2", "staging", "stage", "test", "testing",
         "qa", "uat", "sandbox", "preview", "demo", "beta", "alpha",
-        "ci", "cd", "build", "deploy",
+        "cd", "build", "deploy",
         # Admin
         "admin", "administrator", "manage", "management",
         "panel", "control", "cpanel", "plesk", "dashboard",
@@ -406,6 +454,16 @@ def run_subdomain_enum(target: str) -> str:
         # Misc
         "backup", "old", "legacy", "archive",
     ]
+
+    # Load custom wordlist from settings
+    wl = settings.get_wordlist('subdomain')
+    if wl and os.path.isfile(wl):
+        try:
+            with open(wl, encoding='utf-8', errors='ignore') as _f:
+                extra = [ln.strip() for ln in _f if ln.strip() and not ln.startswith('#')]
+            SUBS = list(dict.fromkeys(SUBS + extra))
+        except Exception:
+            pass
 
     found = []
     try:
@@ -495,6 +553,17 @@ def run_dir_enum(target: str) -> str:
         "/.aws/credentials", "/.ssh/id_rsa", "/.ssh/authorized_keys",
     ]
 
+    # Load custom wordlist from settings
+    wl = settings.get_wordlist('dir')
+    if wl and os.path.isfile(wl):
+        try:
+            with open(wl, encoding='utf-8', errors='ignore') as _f:
+                extra = ['/' + ln.strip().lstrip('/') for ln in _f
+                         if ln.strip() and not ln.startswith('#')]
+            PATHS = list(dict.fromkeys(PATHS + extra))
+        except Exception:
+            pass
+
     STATUS_NOTE = {200: "ACCESSIBLE", 403: "FORBIDDEN (exists)", 301: "REDIRECT", 302: "REDIRECT"}
 
     found = []
@@ -537,30 +606,46 @@ def run_dir_enum(target: str) -> str:
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_banner_grab(target: str) -> str:
-    """Grab banners from sensitive/interesting TCP ports."""
-    PORTS = {
-        21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP",
-        110: "POP3", 143: "IMAP",
-        3306: "MySQL", 5432: "PostgreSQL", 1433: "MSSQL",
-        6379: "Redis", 11211: "Memcached", 27017: "MongoDB",
-        5984: "CouchDB", 9200: "Elasticsearch",
-        8080: "HTTP-alt", 8443: "HTTPS-alt", 8888: "HTTP-alt2",
-        2375: "Docker", 2376: "Docker-TLS", 10250: "Kubernetes",
-    }
-    DANGEROUS_SERVICES = {"Telnet", "Redis", "Memcached", "Docker", "Kubernetes",
-                          "Elasticsearch", "MongoDB", "CouchDB"}
+    """Grab banners from sensitive/interesting TCP ports using port-appropriate probes."""
+    host = target.encode()
+    CRLF = b"\r\n"
+    PORTS = [
+        (21,    "FTP",           None),
+        (22,    "SSH",           None),
+        (23,    "Telnet",        None),
+        (25,    "SMTP",          None),
+        (110,   "POP3",          None),
+        (143,   "IMAP",          None),
+        (3306,  "MySQL",         None),
+        (5432,  "PostgreSQL",    None),
+        (1433,  "MSSQL",         None),
+        (6379,  "Redis",         b"PING" + CRLF),
+        (11211, "Memcached",     b"version" + CRLF),
+        (27017, "MongoDB",       None),
+        (5984,  "CouchDB",       b"GET / HTTP/1.0" + CRLF + b"Host: " + host + CRLF + CRLF),
+        (9200,  "Elasticsearch", b"GET / HTTP/1.0" + CRLF + b"Host: " + host + CRLF + CRLF),
+        (8080,  "HTTP-alt",      b"HEAD / HTTP/1.0" + CRLF + b"Host: " + host + CRLF + CRLF),
+        (8443,  "HTTPS-alt",     b"HEAD / HTTP/1.0" + CRLF + b"Host: " + host + CRLF + CRLF),
+        (8888,  "HTTP-alt2",     b"HEAD / HTTP/1.0" + CRLF + b"Host: " + host + CRLF + CRLF),
+        (2375,  "Docker",        b"GET /version HTTP/1.0" + CRLF + b"Host: " + host + CRLF + CRLF),
+        (2376,  "Docker-TLS",    None),
+        (10250, "Kubernetes",    b"GET /healthz HTTP/1.0" + CRLF + b"Host: " + host + CRLF + CRLF),
+    ]
+    DANGEROUS = {"Telnet", "Redis", "Memcached", "Docker", "Kubernetes",
+                 "Elasticsearch", "MongoDB", "CouchDB", "Docker-TLS"}
     findings = []
-    for port, service in PORTS.items():
+    for port, service, probe in PORTS:
         try:
             s = socket.create_connection((target, port), timeout=3)
             try:
-                s.send(b"HEAD / HTTP/1.0\r\n\r\n")
+                if probe:
+                    s.send(probe)
                 banner = s.recv(512).decode("utf-8", errors="replace").strip()
             except Exception:
                 banner = ""
             s.close()
             first_line = banner.split("\n")[0][:120] if banner else "(no banner)"
-            sev = "CRITICAL" if service in DANGEROUS_SERVICES else "INFO"
+            sev = "CRITICAL" if service in DANGEROUS else "INFO"
             findings.append(f"  [OPEN][{sev}] {port}/{service}: {first_line}")
         except (socket.timeout, ConnectionRefusedError, OSError):
             pass
@@ -568,7 +653,6 @@ def run_banner_grab(target: str) -> str:
             pass
     header = "[Banner Grab — Sensitive Ports]"
     return header + "\n" + ("\n".join(findings) if findings else "  No sensitive ports open.")
-
 
 def run_dns_advanced(target: str) -> str:
     """Advanced DNS: AAAA, SOA, CAA, SPF, DMARC, zone transfer attempt."""
@@ -971,7 +1055,6 @@ def run_sqli_basic(target: str) -> str:
 
             confirmed = []
             for url in list(param_urls)[:10]:
-                from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
                 parsed = urlparse(url)
                 params = parse_qs(parsed.query, keep_blank_values=True)
                 for param_name in list(params.keys())[:3]:
@@ -1024,7 +1107,6 @@ def run_xss_basic(target: str) -> str:
             findings.append(f"[XSS Probe] {len(param_urls)} URL(s) tested")
             confirmed = []
             for url in list(param_urls)[:8]:
-                from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
                 parsed = urlparse(url)
                 params = parse_qs(parsed.query, keep_blank_values=True)
                 for param_name in list(params.keys())[:3]:
@@ -1328,8 +1410,8 @@ ULTRA_TOOL_NAMES = DEEP_TOOL_NAMES + [
 # PARALLEL RUNNER
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-def _run_parallel(tasks: dict, max_workers: int = 5, on_done=None) -> dict:
-    """Run {name: callable} in parallel. Calls on_done(name) after each finishes."""
+def _run_parallel(tasks: dict, max_workers: int = 5, on_done=None, save_fn=None) -> dict:
+    """Run {name: callable} in parallel. Calls on_done(name) and save_fn(name, result) after each."""
     results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {ex.submit(fn): name for name, fn in tasks.items()}
@@ -1339,27 +1421,39 @@ def _run_parallel(tasks: dict, max_workers: int = 5, on_done=None) -> dict:
                 results[name] = future.result()
             except Exception as e:
                 results[name] = f"[!] Error in {name}: {e}"
+            if save_fn:
+                try:
+                    save_fn(name, results[name])
+                except Exception:
+                    pass
             if on_done:
                 on_done(name)
     return results
 
 
-def run_default_recon(target: str, on_done=None) -> dict:
-    tasks = {
+def run_default_recon(target: str, on_done=None, save_fn=None, existing=None) -> dict:
+    existing = existing or {}
+    tasks = {k: v for k, v in {
         "nmap":         lambda: run_nmap(target),
         "whois":        lambda: run_whois(target),
         "whatweb":      lambda: run_whatweb(target),
         "curl_headers": lambda: run_curl_headers(target),
         "dig":          lambda: run_dig(target),
-    }
-    return _run_parallel(tasks, max_workers=5, on_done=on_done)
+    }.items() if k not in existing}
+    for k in existing:
+        if k in STANDARD_TOOL_NAMES and on_done:
+            on_done(k)
+    result = dict(existing)
+    result.update(_run_parallel(tasks, max_workers=5, on_done=on_done, save_fn=save_fn))
+    return result
 
 
-def run_deep_recon(target: str, on_done=None) -> dict:
+def run_deep_recon(target: str, on_done=None, save_fn=None, existing=None) -> dict:
+    existing = existing or {}
     # Phase 1: standard tools
-    results = run_default_recon(target, on_done=on_done)
+    results = run_default_recon(target, on_done=on_done, save_fn=save_fn, existing=existing)
     # Phase 2: all deep tools in parallel
-    deep_tasks = {
+    deep_tasks = {k: v for k, v in {
         "nmap_deep":         lambda: run_nmap_deep(target),
         "sec_headers":       lambda: run_security_headers(target),
         "ssl_check":         lambda: run_ssl_check(target),
@@ -1373,16 +1467,20 @@ def run_deep_recon(target: str, on_done=None) -> dict:
         "js_discovery":      lambda: run_js_discovery(target),
         "http_methods":      lambda: run_http_methods(target),
         "cert_transparency": lambda: run_cert_transparency(target),
-    }
-    results.update(_run_parallel(deep_tasks, max_workers=13, on_done=on_done))
+    }.items() if k not in existing}
+    for k in existing:
+        if k in DEEP_TOOL_NAMES and k not in STANDARD_TOOL_NAMES and on_done:
+            on_done(k)
+    results.update(_run_parallel(deep_tasks, max_workers=13, on_done=on_done, save_fn=save_fn))
     return results
 
 
-def run_ultra_recon(target: str, on_done=None) -> dict:
+def run_ultra_recon(target: str, on_done=None, save_fn=None, existing=None) -> dict:
+    existing = existing or {}
     # Phase 1+2: everything from deep scan
-    results = run_deep_recon(target, on_done=on_done)
+    results = run_deep_recon(target, on_done=on_done, save_fn=save_fn, existing=existing)
     # Phase 3: ultra-aggressive tools in parallel
-    ultra_tasks = {
+    ultra_tasks = {k: v for k, v in {
         "nmap_ultra":       lambda: run_nmap_ultra(target),
         "deface_detect":    lambda: run_deface_detect(target),
         "sqli_basic":       lambda: run_sqli_basic(target),
@@ -1392,8 +1490,11 @@ def run_ultra_recon(target: str, on_done=None) -> dict:
         "open_redirect":    lambda: run_open_redirect(target),
         "info_disclosure":  lambda: run_info_disclosure(target),
         "path_traversal":   lambda: run_path_traversal(target),
-    }
-    results.update(_run_parallel(ultra_tasks, max_workers=9, on_done=on_done))
+    }.items() if k not in existing}
+    for k in existing:
+        if k in ULTRA_TOOL_NAMES and k not in DEEP_TOOL_NAMES and on_done:
+            on_done(k)
+    results.update(_run_parallel(ultra_tasks, max_workers=9, on_done=on_done, save_fn=save_fn))
     return results
 
 
