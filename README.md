@@ -43,27 +43,8 @@
 
 ## Screenshots
 
-> *Terminal UI powered by [Rich](https://github.com/Textualize/rich)*
+<img width="973" height="508" alt="image" src="https://github.com/user-attachments/assets/9cdf1e92-8045-4df7-a2ff-8e116e028433" />
 
-```
-  ▄████████    ▄████████    ▄██████▄     ▄██████▄     ▄████████
-  ███    ███   ███    ███   ███    ███   ███    ███   ███    ███
-  ███    ███   ███    ███   ███    █▀    ███    ███   ███    █▀
-                ▄███▄▄▄▄██▀  ▄███         ███    ███   ███
-▀███████████ ▀▀███▀▀▀▀▀   ▀▀███ ████▄  ███    ███ ▀███████████
-  ███    ███ ▀███████████   ███    ███  ███    ███          ███
-  ███    ███   ███    ███   ███    ███  ███    ███    ▄█    ███
-  ███    █▀    ███    ███   ████████▀    ▀██████▀   ▄████████▀
-
-  Web Security Analysis Assistant
-  ● llama.cpp online  │  model: bench  │  UA: Firefox 120 (Windows)
-
-  [*] [1] New Scan
-  [*] [2] View History
-  [*] [3] Compare Sessions
-  [*] [4] Settings
-  [*] [5] Exit
-```
 
 ---
 
