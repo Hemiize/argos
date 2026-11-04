@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from rich.markup import escape
 from rich.rule import Rule
 from rich import box
 from rich.progress import (
@@ -248,13 +249,13 @@ def print_analysis_result(result: dict, target: str):
 
     console.print()
     console.print(Rule(style=f"bold {risk_col}"))
-    console.print(f"  {risk_badge}   [dim]Target:[/] {target}")
+    console.print(f"  {risk_badge}   [dim]Target:[/] {escape(str(target))}")
     console.print(Rule(style=f"bold {risk_col}"))
     console.print()
 
     if summary:
         console.print(Panel(
-            f"[white]{summary}[/]",
+            f"[white]{escape(str(summary))}[/]",
             title="[bold]Executive Summary[/]",
             border_style="dim",
             padding=(0, 2),
@@ -263,7 +264,7 @@ def print_analysis_result(result: dict, target: str):
 
     if cve_info:
         console.print(Panel(
-            f"[dim]{cve_info}[/]",
+            f"[dim]{escape(str(cve_info))}[/]",
             title="[bold cyan]CVE Enrichment[/]",
             border_style="dim cyan",
             padding=(0, 2),
@@ -283,10 +284,10 @@ def print_analysis_result(result: dict, target: str):
             badge = SEVERITY_BADGE.get(sev, f"[dim]{sev.upper()}[/]")
             t.add_row(
                 str(i),
-                v.get("vuln_name", ""),
+                escape(str(v.get("vuln_name", ""))),
                 badge,
-                v.get("port", "-"),
-                v.get("service", "-"),
+                escape(str(v.get("port", "-"))),
+                escape(str(v.get("service", "-"))),
             )
         console.print(t)
 
@@ -295,11 +296,11 @@ def print_analysis_result(result: dict, target: str):
         for v in vulns:
             sev  = v.get("severity", "unknown").lower()
             col  = SEVERITY_COLOR.get(sev, "white")
-            name = v.get("vuln_name", "")
-            port = v.get("port", "-")
-            svc  = v.get("service", "-")
-            desc = v.get("description", "")
-            fix  = v.get("fix", "")
+            name = escape(str(v.get("vuln_name", "")))
+            port = escape(str(v.get("port", "-")))
+            svc  = escape(str(v.get("service", "-")))
+            desc = escape(str(v.get("description", "")))
+            fix  = escape(str(v.get("fix", "")))
             body = f"[dim]Port:[/] {port}   [dim]Service:[/] {svc}\n\n"
             if desc: body += f"{desc}\n"
             if fix:  body += f"\n[bold green]► Fix:[/] {fix}"
@@ -318,10 +319,10 @@ def print_analysis_result(result: dict, target: str):
         console.print()
         console.print(Rule(f"[bold red] Exploits ({len(exploits)}) [/]", style="red"))
         for e in exploits:
-            name    = e.get("exploit_name", "")
-            tool    = e.get("tool_used", "")
-            payload = e.get("payload", "")
-            notes   = e.get("notes", "")
+            name    = escape(str(e.get("exploit_name", "")))
+            tool    = escape(str(e.get("tool_used", "")))
+            payload = escape(str(e.get("payload", "")))
+            notes   = escape(str(e.get("notes", "")))
             body    = ""
             if tool:    body += f"[dim]Tool:[/]    {tool}\n"
             if payload: body += f"[dim]Payload:[/] [bold]{payload}[/]\n"
@@ -342,8 +343,8 @@ def print_session_detail(data: dict):
     h = data["history"]
     console.print()
     console.print(Panel(
-        f"[dim]SL#[/] [bold]{h[0]}[/]   [dim]Target:[/] [bold cyan]{h[1]}[/]"
-        f"   [dim]Date:[/] {h[2]}   [dim]Status:[/] {h[3]}",
+        f"[dim]SL#[/] [bold]{h[0]}[/]   [dim]Target:[/] [bold cyan]{escape(str(h[1]))}[/]"
+        f"   [dim]Date:[/] {escape(str(h[2]))}   [dim]Status:[/] {escape(str(h[3]))}",
         border_style="cyan",
         padding=(0, 2),
     ))
@@ -359,8 +360,9 @@ def print_session_detail(data: dict):
         t.add_column("Service", style="dim", width=15)
         for v in data["vulns"]:
             sev   = (v[3] or "unknown").lower()
-            badge = SEVERITY_BADGE.get(sev, f"[dim]{sev.upper()}[/]")
-            t.add_row(str(v[0]), v[2] or "", badge, v[4] or "-", v[5] or "-")
+            badge = SEVERITY_BADGE.get(sev, f"[dim]{escape(sev.upper())}[/]")
+            t.add_row(str(v[0]), escape(str(v[2] or "")), badge,
+                      escape(str(v[4] or "-")), escape(str(v[5] or "-")))
         console.print(t)
     else:
         console.print("  [dim]None recorded.[/]")
@@ -369,7 +371,7 @@ def print_session_detail(data: dict):
     console.print(Rule("[bold cyan] Fixes [/]", style="dim"))
     if data["fixes"]:
         for f in data["fixes"]:
-            console.print(f"  [dim]id={f[0]}  vuln_id={f[2]}  [{f[4]}][/]  {f[3]}")
+            console.print(f"  [dim]id={f[0]}  vuln_id={f[2]}  \\[{escape(str(f[4] or ''))}][/]  {escape(str(f[3] or ''))}")
     else:
         console.print("  [dim]None recorded.[/]")
 
@@ -377,7 +379,7 @@ def print_session_detail(data: dict):
     console.print(Rule("[bold cyan] Exploits [/]", style="dim"))
     if data["exploits"]:
         for e in data["exploits"]:
-            console.print(f"  [dim]id={e[0]}[/]  {e[2]}  [dim]Tool:[/] {e[3]}  [dim]Result:[/] {e[5]}")
+            console.print(f"  [dim]id={e[0]}[/]  {escape(str(e[2] or ''))}  [dim]Tool:[/] {escape(str(e[3] or ''))}  [dim]Result:[/] {escape(str(e[5] or ''))}")
     else:
         console.print("  [dim]None recorded.[/]")
 
@@ -389,7 +391,7 @@ def print_session_detail(data: dict):
         badge = RISK_BADGE.get(risk, f"[dim]{risk}[/]")
         console.print(f"  Risk: {badge}   [dim]Generated:[/] {s[5]}")
         if s[3]:
-            snippet = str(s[3])[:600]
+            snippet = escape(str(s[3])[:600])
             console.print(Panel(
                 snippet + ("…" if len(str(s[3])) > 600 else ""),
                 border_style="dim", padding=(0, 2),
