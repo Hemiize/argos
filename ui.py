@@ -90,7 +90,7 @@ def clear_screen():
 
 
 def print_banner(llm_online: bool = False, ua_name: str = "",
-                  backend_name: str = "", model_name: str = ""):
+                  backend_name: str = "", model_name: str = "", session_count: int = 0):
     # Caller is responsible for clearing before calling this
     try:
         console.print(Text(_BANNER, style="bold cyan"), highlight=False)
@@ -106,6 +106,8 @@ def print_banner(llm_online: bool = False, ua_name: str = "",
     model_txt = f"  [dim]│[/]  [dim]model:[/] [bold]{model_name}[/]" if model_name else ""
     ua_txt    = f"  [dim]│[/]  [dim]UA:[/] {ua_name}" if ua_name else ""
     console.print(f"  {llm_dot} [bold]{display_backend}[/] {status}{model_txt}{ua_txt}")
+    if session_count:
+        console.print(f"  [dim]│[/]  [dim]sessions:[/] [bold cyan]{session_count}[/] saved")
     console.print()
 
 
@@ -164,12 +166,16 @@ def scan_progress(total: int, label: str = "Scanning"):
         console=console,
         transient=False,
     ) as progress:
-        task_id = progress.add_task(label, total=total, last="")
+        task_id = progress.add_task(f"{label} [0/{total}]", total=total, last="")
         lock = threading.Lock()
+        completed = [0]
 
         def on_done(tool_name: str):
             with lock:
-                progress.update(task_id, advance=1, last=f"✓ {tool_name}")
+                completed[0] += 1
+                progress.update(task_id, advance=1,
+                               description=f"{label} [{completed[0]}/{total}]",
+                               last=f"✓ {tool_name}")
 
         yield on_done
 
