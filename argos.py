@@ -3,11 +3,18 @@
 """ARGOS — Web Security Analysis Assistant  (main entry point)"""
 
 import sys
+import os
+import re
 import argparse
 import ui
+import config
 import settings
 import tools
 import llm
+import agent
+import search
+from rich.panel import Panel
+from rich.markup import escape
 from config import DEFAULT_SCAN_DEPTH
 from db import (
     create_session, save_vulnerability, save_fix, save_exploit, save_summary,
@@ -316,6 +323,9 @@ def new_scan(prefill_target=None, prefill_depth=None):
     if ui.confirm("Ask follow-up questions? (Chat with ARGOS about these results)", default=False):
         followup_chat(target, raw_scan, result)
 
+    if ui.confirm("Generate kill-chain attack narrative?", default=False):
+        kill_chain_report(sl_no, get_session(sl_no))
+
     if ui.confirm("Export this session?", default=False):
         data = get_session(sl_no)
         export_menu(data)
@@ -362,6 +372,9 @@ def view_history():
     ):
         h = data["history"]
         exploit_mode(sl_no, suggested, h[1])
+
+    if ui.confirm("Generate kill-chain attack narrative?", default=False):
+        kill_chain_report(sl_no, data)
 
     if ui.confirm("Export this session?", default=False):
         export_menu(data)
@@ -702,6 +715,150 @@ def _parse_args():
     return p.parse_args()
 
 
+def kill_chain_report(sl_no: int, data: dict):
+    """Generate + display + save an LLM attack-chain narrative for a session."""
+    target = data["history"][1]
+    ui.divider("KILL-CHAIN REPORT")
+    try:
+        with ui.spinner("LLM building attack narrative …"):
+            md = llm.generate_kill_chain(target, data)
+    except Exception as e:
+        ui.error(f"Kill-chain generation failed: {e}")
+        return
+    ui.console.print()
+    try:
+        from rich.markdown import Markdown
+        ui.console.print(Markdown(md))
+    except Exception:
+        ui.console.print(md, markup=False, highlight=False)
+    os.makedirs(config.REPORTS_DIR, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(target))
+    fn = os.path.join(config.REPORTS_DIR, f"killchain_SL{sl_no}_{safe}.md")
+    try:
+        with open(fn, "w", encoding="utf-8") as f:
+            f.write(f"# ARGOS Kill-Chain Report — {target} (SL#{sl_no})\n\n{md}\n")
+        ui.success(f"Saved: {fn}")
+    except Exception as e:
+        ui.warn(f"Could not save report: {e}")
+
+
+def _adv_agent():
+    target = ui.prompt("Target host (IP or domain)").strip()
+    if not target:
+        return
+    goal = ui.prompt("Goal", default="Find and verify the most impactful vulnerability").strip()
+    steps = ui.prompt("Max steps", default="8").strip()
+    agent.run_agent(target,
+                    goal=goal or "Find and verify the most impactful vulnerability",
+                    max_steps=int(steps) if steps.isdigit() else 8)
+
+
+def _adv_webapp():
+    target = ui.prompt("Target (IP, domain or URL)").strip()
+    if not target:
+        return
+    with ui.spinner("Running web-app probes (spider, API, JWT) …"):
+        results = tools.run_webapp_scan(target)
+    for name, out in results.items():
+        ui.divider(name.replace("_", " ").upper())
+        ui.console.print(out or "(no output)", markup=False, highlight=False)
+    ui.console.print()
+
+
+def _adv_nuclei():
+    target = ui.prompt("Target (IP or domain)").strip()
+    if not target:
+        return
+    update = ui.confirm("Update nuclei templates first? (can be slow)", default=False)
+    sev = ui.prompt("Severity filter", default="critical,high,medium,low").strip()
+    with ui.spinner("Running nuclei …"):
+        out = tools.run_nuclei(target, update=update,
+                               severity=sev or "critical,high,medium,low")
+    ui.console.print(out, markup=False, highlight=False)
+    ui.console.print()
+
+
+def _adv_exploit_search():
+    q = ui.prompt("CVE-ID or software (+version)").strip()
+    if not q:
+        return
+    with ui.spinner("Searching for public exploits …"):
+        if q.upper().startswith("CVE-"):
+            out = search.search_exploits_for_cve(q)
+        else:
+            parts = q.split()
+            out = search.search_exploits(parts[0], parts[1] if len(parts) > 1 else "")
+    ui.console.print(out, markup=False, highlight=False)
+    ui.console.print()
+
+
+def _adv_payload_gen():
+    ui.divider("PAYLOAD GENERATOR")
+    ui.info("Kinds: nuclei | wordlist | poc | sqli | xss | custom")
+    kind = ui.prompt("Kind", default="custom").strip().lower()
+    target = ui.prompt("Target (optional)", default="").strip()
+    context = ui.prompt("Describe target / tech stack / finding").strip()
+    if not context:
+        ui.warn("No context given.")
+        return
+    with ui.spinner("LLM generating …"):
+        out = llm.generate_payload(kind, context, target=target)
+    ui.divider(f"{kind.upper()} OUTPUT")
+    ui.console.print(out or "(empty)", markup=False, highlight=False)
+    if out and ui.confirm("Save to file?", default=True):
+        gen_dir = os.path.join(config.BASE_DIR, "generated")
+        os.makedirs(gen_dir, exist_ok=True)
+        import datetime as _dt
+        ext = {"nuclei": "yaml", "poc": "py", "wordlist": "txt"}.get(kind, "txt")
+        fn = os.path.join(gen_dir, f"{kind}_{_dt.datetime.now():%Y%m%d_%H%M%S}.{ext}")
+        try:
+            with open(fn, "w", encoding="utf-8") as f:
+                f.write(out)
+            ui.success(f"Saved: {fn}")
+        except Exception as e:
+            ui.warn(f"Could not save: {e}")
+
+
+def _adv_killchain():
+    rows = get_all_history()
+    ui.print_history_table(rows)
+    if not rows:
+        return
+    sl_str = ui.prompt("SL# for kill-chain report", default="").strip()
+    if not sl_str.isdigit():
+        ui.error("Invalid SL#.")
+        return
+    data = get_session(int(sl_str))
+    if not data["history"]:
+        ui.error("Session not found.")
+        return
+    kill_chain_report(int(sl_str), data)
+
+
+def advanced_menu():
+    ui.divider("ADVANCED TOOLS")
+    ui.info("[1] Agent mode        — autonomous recon→exploit loop")
+    ui.info("[2] Web-app scan      — spider, params, API/GraphQL, JWT")
+    ui.info("[3] nuclei scan       — template-based vuln scan + triage")
+    ui.info("[4] Exploit search    — find public PoCs by CVE or software")
+    ui.info("[5] Payload generator — LLM writes a payload / template / wordlist")
+    ui.info("[6] Kill-chain report — attack narrative from a saved session")
+    ui.info("[0] Back")
+    ui.divider()
+    choice = ui.prompt("advanced>").strip()
+    dispatch = {
+        "1": _adv_agent, "2": _adv_webapp, "3": _adv_nuclei,
+        "4": _adv_exploit_search, "5": _adv_payload_gen, "6": _adv_killchain,
+    }
+    if choice == "0":
+        return
+    fn = dispatch.get(choice)
+    if fn:
+        fn()
+    else:
+        ui.warn("Invalid choice.")
+
+
 def main():
     args = _parse_args()
 
@@ -751,7 +908,8 @@ def main():
         ui.info("[2] View History")
         ui.info("[3] Compare Sessions")
         ui.info("[4] Settings")
-        ui.info("[5] Exit")
+        ui.info("[5] Advanced Tools")
+        ui.info("[6] Exit")
         ui.divider()
         choice = ui.prompt("argos>").strip()
 
@@ -768,6 +926,9 @@ def main():
             _run_action(settings_menu)
             ui.prompt("Press Enter to return to menu …", default="")
         elif choice == "5":
+            _run_action(advanced_menu)
+            ui.prompt("Press Enter to return to menu …", default="")
+        elif choice == "6":
             ui.console.print("\n[dim]Stay legal. Goodbye.[/dim]\n")
             sys.exit(0)
         else:
