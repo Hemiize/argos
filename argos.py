@@ -3,16 +3,19 @@
 """ARGOS — Web Security Analysis Assistant  (main entry point)"""
 
 import sys
+import argparse
 import ui
 import settings
 import tools
 import llm
+from config import DEFAULT_SCAN_DEPTH
 from db import (
     create_session, save_vulnerability, save_fix, save_exploit, save_summary,
     get_all_history, get_session, get_vulnerabilities, get_fixes, get_exploits,
     edit_vulnerability, edit_fix, edit_exploit, edit_summary_risk,
     delete_vulnerability, delete_exploit, delete_fix, delete_full_session,
-    diff_sessions,
+    diff_sessions, get_session_count, mark_session_partial, mark_session_complete,
+    save_tool_result, get_tool_results,
 )
 from export import export_menu
 
@@ -99,6 +102,7 @@ def exploit_mode(sl_no: int, exploits: list, target: str):
             ui.console.print(output[:4000])
             if len(output) > 4000:
                 ui.info(f"[dim]… {len(output)-4000} chars truncated[/]")
+            # Save execution result as a new DB entry
             save_exploit(
                 sl_no,
                 name + " [EXECUTED]",
@@ -118,26 +122,45 @@ def exploit_mode(sl_no: int, exploits: list, target: str):
 # NEW SCAN
 # ─────────────────────────────────────────────────────────────────────────────
 
-def new_scan():
+def new_scan(prefill_target=None, prefill_depth=None):
     ui.divider("NEW SCAN")
-    target = ui.prompt("Target (IP or domain)").strip()
+    if prefill_target:
+        target = prefill_target.strip()
+        ui.info(f"Target: [bold cyan]{target}[/]")
+    else:
+        target = ui.prompt("Target (IP or domain)").strip()
     if not target:
         ui.warn("No target entered.")
         return
 
+    # ── Target validation
+    with ui.spinner("Validating target …"):
+        ok, msg = tools.validate_target(target)
+    if ok:
+        ui.success(f"Target reachable: {msg}")
+    else:
+        ui.warn(f"Target validation: {msg}")
+        if not ui.confirm("Continue anyway?", default=False):
+            return
+
     history = get_all_history()
-    past = [row for row in history if row[1] == target]
+    past = [row for row in history if row[1] == target and row[3] == "active"]
     if past:
         ui.warn(f"'{target}' has been scanned {len(past)} time(s) before.")
         if not ui.confirm("Continue with a new scan?", default=False):
             return
 
-    ui.divider("SCAN DEPTH")
-    ui.info("[1] Standard    — nmap, whois, whatweb, headers, DNS  (~2 min)")
-    ui.info("[2] Deep        — + SSL, security headers, WAF, CMS, subdomains, dir enum, nikto, CT logs  (~10 min)")
-    ui.info("[3] Ultra Deep  — + all vuln probes: SQLi, XSS, CORS, clickjacking, open redirect,")
-    ui.info("                   deface detection, path traversal, info disclosure, full nmap vuln scripts  (~30 min)")
-    depth_choice = ui.prompt("Depth", default="1").strip()
+    # ── Scan depth
+    _depth_default = {"standard": "1", "deep": "2", "ultra": "3"}.get(DEFAULT_SCAN_DEPTH, "1")
+    if prefill_depth:
+        depth_choice = prefill_depth
+    else:
+        ui.divider("SCAN DEPTH")
+        ui.info("[1] Standard    — nmap, whois, whatweb, headers, DNS  (~2 min)")
+        ui.info("[2] Deep        — + SSL, security headers, WAF, CMS, subdomains, dir enum, nikto, CT logs  (~10 min)")
+        ui.info("[3] Ultra Deep  — + all vuln probes: SQLi, XSS, CORS, clickjacking, open redirect,")
+        ui.info("                   deface detection, path traversal, info disclosure, full nmap vuln scripts  (~30 min)")
+        depth_choice = ui.prompt("Depth", default=_depth_default).strip()
 
     if depth_choice == "3":
         depth = "ultra"
@@ -146,9 +169,27 @@ def new_scan():
     else:
         depth = "standard"
 
-    sl_no = create_session(target)
-    ui.success(f"Session created — SL# {sl_no}")
+    # ── Resume check
+    partial = [row for row in get_all_history() if row[1] == target and row[3] == "partial"]
+    existing = {}
+    if partial:
+        latest = partial[0]
+        completed = get_tool_results(latest[0])
+        ui.warn(f"Found interrupted scan SL# {latest[0]} ({len(completed)} tools done on {latest[2]}).")
+        if ui.confirm("Resume this scan?", default=True):
+            sl_no = latest[0]
+            existing = completed
+            ui.success(f"Resuming SL# {sl_no} — {len(existing)} tools already done.")
+        else:
+            sl_no = create_session(target)
+            mark_session_partial(sl_no)
+            ui.success(f"Session created — SL# {sl_no}")
+    else:
+        sl_no = create_session(target)
+        mark_session_partial(sl_no)
+        ui.success(f"Session created — SL# {sl_no}")
 
+    # ── Recon
     ui.divider("RECON")
     if depth == "ultra":
         tool_names = tools.ULTRA_TOOL_NAMES
@@ -156,15 +197,16 @@ def new_scan():
         tool_names = tools.DEEP_TOOL_NAMES
     else:
         tool_names = tools.STANDARD_TOOL_NAMES
-    total_tools = len(tool_names)
+    total_tools = len([n for n in tool_names if n not in existing]) if existing else len(tool_names)
+    _save_fn = lambda n, r: save_tool_result(sl_no, n, r)
 
     with ui.scan_progress(total_tools, label="Recon") as on_done:
         if depth == "ultra":
-            recon_data = tools.run_ultra_recon(target, on_done=on_done)
+            recon_data = tools.run_ultra_recon(target, on_done=on_done, save_fn=_save_fn, existing=existing)
         elif depth == "deep":
-            recon_data = tools.run_deep_recon(target, on_done=on_done)
+            recon_data = tools.run_deep_recon(target, on_done=on_done, save_fn=_save_fn, existing=existing)
         else:
-            recon_data = tools.run_default_recon(target, on_done=on_done)
+            recon_data = tools.run_default_recon(target, on_done=on_done, save_fn=_save_fn, existing=existing)
 
     raw_scan = tools.format_recon_for_llm(recon_data)
 
@@ -173,6 +215,8 @@ def new_scan():
         delete_full_session(sl_no)
         return
 
+
+    # ── AI Analysis ─────────────────────────────────────────────────────────
     ui.divider("AI ANALYSIS")
     try:
         result = llm.analyse_target(target, raw_scan)
@@ -181,9 +225,11 @@ def new_scan():
         delete_full_session(sl_no)
         return
 
+    # ── Results ──────────────────────────────────────────────────────────────
     ui.divider("RESULTS")
     ui.print_analysis_result(result, target)
 
+    # ── Save ─────────────────────────────────────────────────────────────────
     ui.divider("SAVING")
     for vuln in result.get("vulnerabilities", []):
         vuln_id = save_vulnerability(
@@ -206,8 +252,10 @@ def new_scan():
         ui.success(f"Saved exploit: {exp.get('exploit_name', '?')}")
 
     save_summary(sl_no, result["raw_scan"], result["full_response"], result["risk_level"])
+    mark_session_complete(sl_no)
     ui.success(f"All data saved — SL# {sl_no} | Risk: {result['risk_level']}")
 
+    # ── Post-scan options ────────────────────────────────────────────────────
     exploits_list = result.get("exploits", [])
     if exploits_list and ui.confirm(
         f"Execute payloads? ({len(exploits_list)} exploit(s) suggested)", default=False
@@ -251,6 +299,7 @@ def view_history():
 
     ui.print_session_detail(data)
 
+    # Reload session exploits from DB for payload execution
     db_exploits = get_exploits(sl_no)
     suggested = [
         {"exploit_name": e[2], "tool_used": e[3],
@@ -450,13 +499,23 @@ def settings_menu():
         think_label   = "[bold green]ON[/]" if show_thinking else "[dim]OFF[/]"
 
         ui.divider("SETTINGS")
+        proxy_val = settings.get_proxy() or "[dim](not set)[/]"
+        cookie_val = "[dim](set)[/]" if settings.get_auth_cookie() else "[dim](not set)[/]"
+        basic_val  = "[dim](set)[/]" if settings.get_basic_auth() else "[dim](not set)[/]"
+        dir_wl     = settings.get_wordlist("dir") or "[dim](built-in)[/]"
+        sub_wl     = settings.get_wordlist("subdomain") or "[dim](built-in)[/]"
         ui.info(f"[1] LLM Backend     : {current_backend} — {cfg['label']}")
         ui.info(f"[2] Model name      : {cfg['model']}")
         ui.info(f"[3] Server URL      : {cfg['url']}")
         ui.info(f"[4] User-Agent      : {current_ua}")
         ui.info(f"[5] Show thinking   : {think_label}  (show <think>…</think> from reasoning models)")
         ui.info(f"[6] CVE cache       : {cve_stats}")
-        ui.info("[7] Back")
+        ui.info(f"[7] Proxy           : {proxy_val}")
+        ui.info(f"[8] Auth cookie     : {cookie_val}")
+        ui.info(f"[9] Basic auth      : {basic_val}")
+        ui.info(f"[A] Dir wordlist    : {dir_wl}")
+        ui.info(f"[B] Sub wordlist    : {sub_wl}")
+        ui.info("[0] Back")
         ui.divider()
         choice = ui.prompt("Choice").strip()
 
@@ -527,6 +586,44 @@ def settings_menu():
                     ui.error(f"Could not clear cache: {e}")
 
         elif choice == "7":
+            proxy_new = ui.prompt("Proxy URL (empty to clear)", default=settings.get_proxy()).strip()
+            s["proxy_url"] = proxy_new
+            settings.save(s)
+            ui.success(f"Proxy set to: {proxy_new or '(none)'}")
+
+        elif choice == "8":
+            cookie_new = ui.prompt("Cookie string (empty to clear)", default="").strip()
+            s["auth_cookie"] = cookie_new
+            settings.save(s)
+            ui.success("Auth cookie " + ("set." if cookie_new else "cleared."))
+
+        elif choice == "9":
+            user = ui.prompt("Username (empty to clear)", default="").strip()
+            if user:
+                pw = ui.prompt("Password", default="").strip()
+                s["auth_basic_user"] = user
+                s["auth_basic_pass"] = pw
+                settings.save(s)
+                ui.success(f"Basic auth set for user: {user}")
+            else:
+                s["auth_basic_user"] = ""
+                s["auth_basic_pass"] = ""
+                settings.save(s)
+                ui.success("Basic auth cleared.")
+
+        elif choice.upper() == "A":
+            wl = ui.prompt("Dir wordlist path (empty for built-in)", default=settings.get_wordlist("dir")).strip()
+            s["dir_wordlist"] = wl
+            settings.save(s)
+            ui.success(f"Dir wordlist: {wl or '(built-in)'}")
+
+        elif choice.upper() == "B":
+            wl = ui.prompt("Subdomain wordlist path (empty for built-in)", default=settings.get_wordlist("subdomain")).strip()
+            s["subdomain_wordlist"] = wl
+            settings.save(s)
+            ui.success(f"Subdomain wordlist: {wl or '(built-in)'}")
+
+        elif choice == "0":
             break
         else:
             ui.warn("Invalid choice.")
@@ -536,19 +633,60 @@ def settings_menu():
 # MAIN MENU
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _parse_args():
+    p = argparse.ArgumentParser(
+        prog="argos",
+        description="ARGOS — Web Security Analysis Assistant",
+    )
+    p.add_argument("--target", "-t", metavar="TARGET",
+                   help="Target IP or domain (skip the prompt)")
+    p.add_argument("--depth", "-d", choices=["1", "2", "3"], metavar="DEPTH",
+                   help="Scan depth: 1=standard 2=deep 3=ultra")
+    p.add_argument("--proxy", "-p", metavar="URL",
+                   help="Proxy URL for all requests (e.g. http://127.0.0.1:8080)")
+    p.add_argument("--cookie", metavar="COOKIE",
+                   help="Raw Cookie header for authenticated scans")
+    p.add_argument("--auth", metavar="USER:PASS",
+                   help="HTTP Basic Auth credentials")
+    return p.parse_args()
+
+
 def main():
+    args = _parse_args()
+
+    # Apply CLI overrides to settings (saved for duration of run)
+    if args.proxy or args.cookie or args.auth:
+        s = settings.load()
+        if args.proxy:
+            s["proxy_url"] = args.proxy
+        if args.cookie:
+            s["auth_cookie"] = args.cookie
+        if args.auth:
+            user, _, pw = args.auth.partition(":")
+            s["auth_basic_user"] = user
+            s["auth_basic_pass"] = pw
+        settings.save(s)
+
+    # Direct scan via CLI args (--target bypasses the menu)
+    if args.target:
+        new_scan(prefill_target=args.target, prefill_depth=args.depth)
+        return
+
     first_run = True
     while True:
+        # Clear exactly once per loop iteration, before printing the banner
         if not first_run:
             ui.clear_screen()
         first_run = False
 
-        online  = llm.check_llm_online()
-        ua_name = settings.get_user_agent_name()
-        cfg     = settings.get_backend_config()
+        online      = llm.check_llm_online()
+        ua_name     = settings.get_user_agent_name()
+        cfg         = settings.get_backend_config()
+        sess_count  = get_session_count()
 
         ui.print_banner(llm_online=online, ua_name=ua_name,
-                        backend_name=cfg["label"], model_name=cfg["model"])
+                        backend_name=cfg["label"], model_name=cfg["model"],
+                        session_count=sess_count)
 
         ui.info("[1] New Scan")
         ui.info("[2] View History")
