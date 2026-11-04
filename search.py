@@ -63,6 +63,23 @@ def fetch_page(url: str, max_chars: int = 3000) -> str:
         return f"[!] Fetch failed: {e}"
 
 
+def search_exploits(software: str, version: str = "") -> str:
+    """Find public exploits / PoCs for a software (+optional version) via the web."""
+    q = f"{software} {version}".strip()
+    print(f"  [*] Searching exploits for: {q}")
+    web = web_search(f"{q} exploit poc github exploit-db", max_results=6)
+    return f"[EXPLOIT SEARCH: {q}]\n{web}"
+
+
+def search_exploits_for_cve(cve_id: str) -> str:
+    """Find public exploits / PoCs for a specific CVE, plus the NVD detail page."""
+    cve_id = cve_id.upper().strip()
+    print(f"  [*] Searching exploits for: {cve_id}")
+    web = web_search(f"{cve_id} exploit poc github", max_results=6)
+    nvd = fetch_page(f"https://nvd.nist.gov/vuln/detail/{cve_id}", max_chars=1500)
+    return f"[EXPLOITS FOR {cve_id}]\n{web}\n\n[NVD DETAIL]\n{nvd}"
+
+
 def handle_search_dispatch(query: str) -> str:
     query = query.strip()
     cve_match = re.search(r'CVE-\d{4}-\d{4,7}', query, re.IGNORECASE)
