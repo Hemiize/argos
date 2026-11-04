@@ -613,3 +613,32 @@ def generate_kill_chain(target: str, data: dict) -> str:
     raw = ask_llm(messages)
     clean, _ = strip_thinking(raw)
     return clean.strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODEL DISCOVERY
+# ─────────────────────────────────────────────────────────────────────────────
+
+def list_models() -> list:
+    """Return the model ids available on the active backend.
+
+    llama.cpp : GET {url}/v1/models  -> {"data": [{"id": ...}]}
+    Ollama    : GET {url}/api/tags   -> {"models": [{"name": ...}]}
+    Returns an empty list if the backend is unreachable or returns nothing.
+    """
+    cfg = settings.get_backend_config()
+    try:
+        if cfg["type"] == "llamacpp":
+            url  = cfg["url"].rstrip("/") + "/v1/models"
+            resp = requests.get(url, timeout=5)
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            return [m.get("id", "") for m in data if m.get("id")]
+        else:  # ollama
+            url  = cfg["url"].rstrip("/") + "/api/tags"
+            resp = requests.get(url, timeout=5)
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+            return [m.get("name", "") for m in models if m.get("name")]
+    except Exception:
+        return []
