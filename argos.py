@@ -569,7 +569,7 @@ def settings_menu():
         dir_wl     = settings.get_wordlist("dir") or "[dim](built-in)[/]"
         sub_wl     = settings.get_wordlist("subdomain") or "[dim](built-in)[/]"
         ui.info(f"[1] LLM Backend     : {current_backend} — {cfg['label']}")
-        ui.info(f"[2] Model name      : {cfg['model']}")
+        ui.info(f"[2] Model           : {cfg['model']}  [dim](select from server)[/]")
         ui.info(f"[3] Server URL      : {cfg['url']}")
         ui.info(f"[4] User-Agent      : {current_ua}")
         ui.info(f"[5] Show thinking   : {think_label}  (show <think>…</think> from reasoning models)")
@@ -598,10 +598,28 @@ def settings_menu():
                 ui.warn("Cancelled.")
 
         elif choice == "2":
-            be = settings.get_backend_name()
-            new_model = ui.prompt("New model name", default=cfg["model"]).strip()
+            be  = settings.get_backend_name()
+            key = "llamacpp_model" if be == "llama.cpp" else "ollama_model"
+            with ui.spinner(f"Querying {cfg['label']} for available models …"):
+                models = llm.list_models()
+            new_model = ""
+            if models:
+                ui.info(f"Available models on {cfg['label']}:")
+                for i, m in enumerate(models, 1):
+                    marker = " [bold cyan][active][/]" if m == cfg["model"] else ""
+                    ui.info(f"  [{i:2d}] {m}{marker}")
+                ui.info("  [ 0] Enter a name manually")
+                mc = ui.prompt("Select model number (or Enter to cancel)", default="").strip()
+                if mc == "0":
+                    new_model = ui.prompt("Model name", default=cfg["model"]).strip()
+                elif mc.isdigit() and 1 <= int(mc) <= len(models):
+                    new_model = models[int(mc) - 1]
+                else:
+                    ui.warn("Cancelled.")
+            else:
+                ui.warn(f"Could not reach {cfg['label']} — enter the model name manually.")
+                new_model = ui.prompt("Model name", default=cfg["model"]).strip()
             if new_model:
-                key = "llamacpp_model" if be == "llama.cpp" else "ollama_model"
                 s[key] = new_model
                 settings.save(s)
                 ui.success(f"Model set to: {new_model}")
