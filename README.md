@@ -20,8 +20,13 @@
 |---|---|
 | **27-tool ultra deep scan** | Standard (5) → Deep (13) → Ultra (27) recon tools |
 | **Local LLM analysis** | Runs entirely on-device via llama.cpp or Ollama — no cloud, no data leaks |
+| **Autonomous agent** | Scope-locked recon→exploit loop — the LLM decides each next command (human-confirmed) |
+| **Web-app testing** | Spider/crawl, parameter & form discovery, API/GraphQL introspection, JWT analysis |
+| **Payload generation** | LLM writes custom nuclei templates, wordlists, PoCs and tailored SQLi/XSS payloads |
+| **Kill-chain report** | LLM turns findings into an ordered attack narrative with mitigations |
 | **Live token/s display** | Streams LLM output with real-time token counter |
 | **CVE enrichment** | NVD API v2 with 7-day local SQLite cache |
+| **Exploit search** | Find public PoCs by CVE-ID or software + version |
 | **Deface detection** | Checks defacement signatures, shell paths, WebDAV write access |
 | **Payload execution** | Allowlisted exploit runner (nmap, sqlmap, nikto, curl, dirb…) |
 | **AI exploit analysis** | LLM interprets raw tool output — shows success/fail + verdict + evidence |
@@ -189,7 +194,8 @@ ollama run llama3-uncensored
 [2] View History      — browse past sessions, re-run exploits, export reports
 [3] Compare Sessions  — diff two scans to track remediation progress
 [4] Settings          — switch backend, model, user-agent, proxy, auth, CVE cache
-[5] Exit
+[5] Advanced Tools    — agent mode, web-app scan, nuclei, exploit search, payload gen, kill-chain
+[6] Exit
 ```
 
 ### Scan flow
@@ -199,7 +205,7 @@ ollama run llama3-uncensored
 4. ARGOS runs all recon tools in parallel with a live `[X/N]` progress counter
 5. LLM analyses raw scan data with live token counter
 6. Results displayed with severity-coloured panels
-7. Optionally: execute payloads with AI-interpreted result, chat about results, export report
+7. Optionally: execute payloads with AI-interpreted result, generate a kill-chain report, chat about results, export report
 
 ---
 
@@ -243,6 +249,25 @@ The local LLM then interprets the raw tool output and displays a clean result:
 
 ---
 
+## Advanced Tools
+
+**Main menu → [5] Advanced Tools**
+
+| # | Tool | What it does |
+|---|------|--------------|
+| 1 | **Agent mode** | Autonomous recon→exploit loop. The LLM observes each result and decides the next command, **scope-locked to a single host**. Every command is shown and **confirmed before it runs**, and any command that references a different host or IP is rejected. You set a goal and a step limit; only installed tools are offered. |
+| 2 | **Web-app scan** | Same-origin spider (URLs, parameters, forms) + API/doc endpoint probing (Swagger/OpenAPI) + GraphQL introspection check + JWT discovery/decoding (flags `alg:none` and HMAC). |
+| 3 | **nuclei scan** | Runs nuclei against the target, optionally updates templates first, and triages matches by severity. |
+| 4 | **Exploit search** | Finds public PoCs/exploits by CVE-ID (e.g. `CVE-2021-44228`) or by software name + version, via web search + NVD. |
+| 5 | **Payload generator** | The local LLM writes a tailored artifact for the target: `nuclei` template, `wordlist`, `poc` (Python), `sqli` / `xss` payloads, or `custom`. Saved to `generated/`. |
+| 6 | **Kill-chain report** | Turns a saved session's findings into an ordered attack narrative (technique + one-line mitigation per step). Saved as `killchain_SL<n>_<target>.md` in `reports/`; also offered right after a scan. |
+
+> Agent mode and payload generation lean heavily on the LLM — use an [uncensored / abliterated model](#recommended-models) for useful results.
+>
+> **Everything here stays inside the same authorized-use rule as the rest of ARGOS** — the agent is scope-locked and human-confirmed by design.
+
+---
+
 ## Export Formats
 
 From **View History → [session] → Export**:
@@ -259,18 +284,19 @@ From **View History → [session] → Export**:
 ## Project Structure
 
 ```
-argos.py        — main entry point, menu logic, CLI args
+argos.py        — main entry point, menu logic, CLI args, Advanced Tools menu
+agent.py        — autonomous recon→exploit agent loop (scope-locked, human-in-the-loop)
 config.py       — paths, URLs, timeouts, default scan depth
 settings.py     — user settings (backend, model, proxy, auth, wordlists)
-llm.py          — LLM bridge (llama.cpp + Ollama, streaming, exploit analysis)
-tools.py        — 27 recon tool runners, _SessionFactory, validate_target
+llm.py          — LLM bridge (llama.cpp + Ollama, streaming, exploit analysis, payload/kill-chain gen)
+tools.py        — recon tool runners, nuclei + web-app probes, _SessionFactory, validate_target
 ui.py           — Rich terminal UI components
 db.py           — SQLite session database, scan resume
 cve.py          — NVD CVE enrichment
 export.py       — PDF, HTML, JSON, Markdown report generation
-search.py       — DuckDuckGo web search helper
+search.py       — DuckDuckGo web search + exploit/PoC search
 requirements.txt
-setup.bat       — Windows setup script
+setup.bat       — Windows setup script (venv + Scoop + exploit tools)
 start.bat       — Windows launcher
 ```
 
@@ -280,8 +306,9 @@ start.bat       — Windows launcher
 
 - All analysis is performed **locally** — no scan data is sent to any cloud service
 - The LLM runs entirely on your hardware (llama.cpp / Ollama)
+- Agent mode is **scope-locked** to one host and **confirms every command** before running it
 - NVD CVE lookups contact `services.nvd.nist.gov` only (cacheable offline after first run)
-- DuckDuckGo search is optional and only used in the follow-up chat search feature
+- Web search / exploit search is optional and only used when you invoke it
 
 ---
 
