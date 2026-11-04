@@ -518,3 +518,98 @@ def analyze_exploit_result(exploit: dict, raw_output: str) -> dict:
     except Exception:
         return {}
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAYLOAD / TEMPLATE / WORDLIST GENERATION  (local LLM, authorized testing)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_GEN_SYSTEM = (
+    "You are an offensive-security assistant helping a professional on an AUTHORIZED "
+    "penetration test of their own system. Produce the requested artifact directly, "
+    "with no disclaimers and no commentary unless asked. Output only the artifact."
+)
+
+_GEN_GUIDES = {
+    "nuclei":   ("Write ONE valid nuclei v3 YAML template for the described finding. "
+                 "Output only the YAML, starting at 'id:'."),
+    "wordlist": ("Produce a newline-separated wordlist tailored to the described target/tech. "
+                 "One entry per line, no numbering, no commentary."),
+    "poc":      ("Write a minimal, self-contained Python 3 proof-of-concept script for the "
+                 "described finding. Use only the standard library + requests. Output only code."),
+    "sqli":     ("Provide tailored SQL-injection test payloads for the described parameter/DBMS, "
+                 "one per line, with a one-line '# ' comment above each explaining it."),
+    "xss":      ("Provide tailored XSS test payloads for the described context (HTML/attr/JS/URL), "
+                 "one per line, with a one-line '# ' comment above each explaining the context."),
+    "custom":   ("Produce the requested security testing artifact for the described target."),
+}
+
+
+def generate_payload(kind: str, context: str, target: str = "") -> str:
+    """Use the active LLM to generate a payload/template/wordlist/PoC for authorized testing.
+
+    kind: one of nuclei | wordlist | poc | sqli | xss | custom
+    context: free-text description of the target/tech/finding.
+    Returns the generated text (thinking stripped).
+    """
+    guide = _GEN_GUIDES.get(kind, _GEN_GUIDES["custom"])
+    user = ""
+    if target:
+        user += f"Target: {target}\n"
+    user += f"Context / tech stack / finding:\n{context}\n\nTask: {guide}"
+    messages = [
+        {"role": "system", "content": _GEN_SYSTEM},
+        {"role": "user",   "content": user},
+    ]
+    raw = ask_llm(messages)
+    clean, _ = strip_thinking(raw)
+    return clean.strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KILL-CHAIN / ATTACK-NARRATIVE REPORT
+# ─────────────────────────────────────────────────────────────────────────────
+
+_KILLCHAIN_SYSTEM = (
+    "You are a senior penetration tester writing the attack-narrative section of a report "
+    "for an AUTHORIZED engagement. Be concrete, technical and concise. Output Markdown only."
+)
+
+
+def generate_kill_chain(target: str, data: dict) -> str:
+    """Produce an ordered attack-chain narrative from a session's findings.
+
+    data: the dict returned by db.get_session (keys: vulns, exploits, summary).
+    Returns Markdown text.
+    """
+    vulns = data.get("vulns", []) or []
+    lines = []
+    for v in vulns:
+        sev  = (v[3] or "?").upper()
+        lines.append(f"- [{sev}] {v[2]} (port {v[4] or '-'}, {v[5] or '-'}): {v[6] or ''}")
+    findings = "\n".join(lines) or "(no structured vulnerabilities recorded)"
+
+    exploits = data.get("exploits", []) or []
+    exp_lines = [f"- {e[2]} via {e[3]}: {str(e[5] or '')[:120]}" for e in exploits]
+    exp_txt = "\n".join(exp_lines) or "(none run)"
+
+    summary = data.get("summary")
+    ai = summary[3] if summary else ""
+
+    user = (
+        f"Target: {target}\n\n"
+        f"Confirmed findings:\n{findings}\n\n"
+        f"Exploits attempted:\n{exp_txt}\n\n"
+        f"Prior AI analysis:\n{str(ai)[:1500]}\n\n"
+        "Write the attack-chain / kill-chain narrative: how a realistic attacker could chain "
+        "these findings from initial access to maximum impact. Use ordered steps; for each step "
+        "give the technique and a one-line mitigation. If findings are weak, say so honestly. "
+        "No preamble, Markdown only."
+    )
+    messages = [
+        {"role": "system", "content": _KILLCHAIN_SYSTEM},
+        {"role": "user",   "content": user},
+    ]
+    raw = ask_llm(messages)
+    clean, _ = strip_thinking(raw)
+    return clean.strip()
