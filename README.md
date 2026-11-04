@@ -55,7 +55,7 @@
 
 ### Software
 - Python 3.10+
-- [nmap](https://nmap.org/download.html) (add to PATH — required for port scanning)
+- **Exploit tools** — installed automatically by `setup.bat`: `nmap`, `gobuster`, `ffuf`, `nuclei` (via [Scoop](https://scoop.sh)), `sqlmap` (via pip), and `curl` (built into Windows 10+). See [Payload Execution Mode](#payload-execution-mode) for the full list.
 - One of:
   - [llama.cpp server](https://github.com/ggerganov/llama.cpp) (`llama-server`) with a GGUF model
   - [Ollama](https://ollama.com/) with any supported model
@@ -78,6 +78,8 @@ cd argos
 setup.bat
 ```
 
+`setup.bat` creates the venv, installs the Python dependencies, bootstraps [Scoop](https://scoop.sh) (no admin needed), and installs the exploit tools (`nmap`, `gobuster`, `ffuf`, `nuclei`, `sqlmap`).
+
 ### Linux / macOS
 
 ```bash
@@ -86,6 +88,12 @@ cd argos
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+```
+
+On Linux all exploit tools are available from your package manager, e.g.:
+```bash
+sudo apt install nmap nikto dirb hydra wfuzz whatweb gobuster
+pip install sqlmap        # ffuf / nuclei: go install or distro package
 ```
 
 ---
@@ -197,11 +205,22 @@ ollama run llama3-uncensored
 
 ## Payload Execution Mode
 
-After a scan, ARGOS offers to execute LLM-suggested exploits via an **allowlisted runner**:
+After a scan, ARGOS offers to execute LLM-suggested exploits via an **allowlisted runner**.
 
-```
-Allowed tools: nmap, sqlmap, nikto, dirb, gobuster, wfuzz, hydra, curl, whatweb, ffuf, nuclei
-```
+### Tools & installation
+
+`setup.bat` installs these automatically on Windows:
+
+| Tool | Install method |
+|---|---|
+| `nmap`, `gobuster`, `ffuf`, `nuclei` | Scoop (`scoop install …`) |
+| `sqlmap` | pip (into the venv) |
+| `curl` | built into Windows 10+ |
+
+The runner also allows **`nikto`, `dirb`, `hydra`, `wfuzz`, `whatweb`**, but these have no native Windows build. Install them in WSL / Linux (`sudo apt install …`) and run ARGOS there to use them.
+
+> `nmap` from Scoop runs in `connect()` mode. For raw-packet scans (e.g. SYN scan), install Npcap once as admin:
+> `%USERPROFILE%\scoop\apps\nmap\current\npcap.exe`
 
 The local LLM then interprets the raw tool output and displays a clean result:
 
