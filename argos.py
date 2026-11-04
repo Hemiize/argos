@@ -94,24 +94,75 @@ def exploit_mode(sl_no: int, exploits: list, target: str):
     for e in to_run:
         name = e.get("exploit_name", "?")
         ui.divider(f"RUNNING: {name}")
-        ui.info(f"Tool: {e.get('tool_used','?')}  |  Target substitution: {target}")
+        ui.info(f"Tool: {e.get('tool_used','?')}  |  Target: {target}")
         try:
             with ui.spinner(f"Executing {name} …"):
                 output = tools.run_suggested_exploit(e, target)
+
+            with ui.spinner("AI analysiert Ergebnis …"):
+                analysis = llm.analyze_exploit_result(e, output)
+
             ui.console.print()
-            ui.console.print(output[:4000])
-            if len(output) > 4000:
-                ui.info(f"[dim]… {len(output)-4000} chars truncated[/]")
-            # Save execution result as a new DB entry
+            if analysis:
+                success = analysis.get("success")
+                if success is True:
+                    icon   = "[bold green]✔  ERFOLG[/]"
+                    bstyle = "green"
+                elif success == "partial":
+                    icon   = "[bold yellow]⚠  TEILWEISE[/]"
+                    bstyle = "yellow"
+                else:
+                    icon   = "[bold red]✘  FEHLGESCHLAGEN[/]"
+                    bstyle = "red"
+
+                sev_colors = {"critical": "bold red", "high": "red",
+                              "medium": "yellow", "low": "cyan", "info": "dim"}
+                sev     = analysis.get("severity", "info")
+                sev_col = sev_colors.get(sev, "dim")
+
+                from rich.panel import Panel
+                body_lines = [
+                    icon,
+                    "",
+                    f"[bold]Ergebnis  :[/] {analysis.get('verdict', '?')}",
+                ]
+                if analysis.get("evidence"):
+                    body_lines.append(
+                        f"[bold]Beweis    :[/] [dim]{analysis['evidence']}[/]"
+                    )
+                body_lines.append(
+                    f"[bold]Severity  :[/] [{sev_col}]{sev.upper()}[/]"
+                )
+                if analysis.get("recommendation"):
+                    body_lines.append(
+                        f"[bold]Next step :[/] {analysis['recommendation']}"
+                    )
+
+                ui.console.print(Panel(
+                    "\n".join(body_lines),
+                    title=f"[bold]{name}[/]",
+                    border_style=bstyle,
+                ))
+                result_str = (
+                    f"[{success}] {analysis.get('verdict', '')} | "
+                    f"sev:{sev} | {analysis.get('evidence', '')}"
+                )
+            else:
+                # LLM offline — show trimmed raw output
+                ui.console.print(output[:1500])
+                if len(output) > 1500:
+                    ui.info(f"[dim]… {len(output)-1500} Zeichen ausgeblendet[/]")
+                result_str = output[:2000]
+
             save_exploit(
                 sl_no,
                 name + " [EXECUTED]",
                 e.get("tool_used", ""),
                 e.get("payload", ""),
-                output[:2000],
+                result_str[:2000],
                 e.get("notes", ""),
             )
-            ui.success(f"Execution result saved for: {name}")
+            ui.success(f"Ergebnis gespeichert: {name}")
         except Exception as ex:
             ui.error(f"Execution failed: {ex}")
 
