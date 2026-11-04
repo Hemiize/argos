@@ -13,9 +13,10 @@ import requests
 from config import DB_PATH
 
 NVD_API    = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-CACHE_DAYS = 7
-NVD_TIMEOUT = 8
+CACHE_DAYS = 7       # days before re-fetching
+NVD_TIMEOUT = 8      # seconds per request
 
+# ── Software version patterns from nmap output ───────────────────────────────
 _SW_PATTERNS = [
     r"(Apache(?:\s+httpd)?)\s+([\d][\d\.]+)",
     r"(nginx)\s+([\d][\d\.]+)",
@@ -62,6 +63,7 @@ def _ensure_cache_table(conn: sqlite3.Connection):
 
 
 def extract_software_versions(text: str) -> list:
+    """Return list of (software, version) pairs found in text."""
     found = {}
     for pat in _SW_PATTERNS:
         for m in re.finditer(pat, text, re.IGNORECASE):
@@ -74,10 +76,14 @@ def extract_software_versions(text: str) -> list:
 
 
 def _fetch_nvd(software: str, version: str) -> list:
+    """Query NVD API v2. Returns list of CVE dicts."""
     try:
         resp = requests.get(
             NVD_API,
-            params={"keywordSearch": f"{software} {version}", "resultsPerPage": 5},
+            params={
+                "keywordSearch":    f"{software} {version}",
+                "resultsPerPage":   5,
+            },
             timeout=NVD_TIMEOUT,
             headers={"Accept": "application/json"},
         )
@@ -89,13 +95,18 @@ def _fetch_nvd(software: str, version: str) -> list:
             cve_id = item.get("cve", {}).get("id", "")
             descs  = item.get("cve", {}).get("descriptions", [])
             desc   = next((d["value"] for d in descs if d.get("lang") == "en"), "")
+            # CVSS score: prefer v3.1 → v3.0 → v2
             score = None
             for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
                 metrics = item.get("cve", {}).get("metrics", {}).get(key, [])
                 if metrics:
                     score = metrics[0].get("cvssData", {}).get("baseScore")
                     break
-            results.append({"cve_id": cve_id, "score": score, "summary": desc[:300]})
+            results.append({
+                "cve_id":  cve_id,
+                "score":   score,
+                "summary": desc[:300],
+            })
         results.sort(key=lambda x: x["score"] or 0, reverse=True)
         return results[:5]
     except Exception:
@@ -103,22 +114,28 @@ def _fetch_nvd(software: str, version: str) -> list:
 
 
 def lookup_cves(software: str, version: str, force_refresh: bool = False) -> list:
+    """Return CVEs for software/version. Uses SQLite cache; falls back to empty list."""
     try:
         conn = sqlite3.connect(DB_PATH)
         _ensure_cache_table(conn)
+
         if not force_refresh:
             row = conn.execute(
                 "SELECT cve_data, fetched_at FROM cve_cache WHERE software=? AND version=?",
                 (software.lower(), version),
             ).fetchone()
             if row:
-                age = (datetime.datetime.utcnow() -
-                       datetime.datetime.fromisoformat(row[1])).days
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                fetched = datetime.datetime.fromisoformat(row[1])
+                if fetched.tzinfo is None:
+                    fetched = fetched.replace(tzinfo=datetime.timezone.utc)
+                age = (now_utc - fetched).days
                 if age < CACHE_DAYS:
                     conn.close()
                     return json.loads(row[0])
+
         cves = _fetch_nvd(software, version)
-        now  = datetime.datetime.utcnow().isoformat()
+        now  = datetime.datetime.now(datetime.timezone.utc).isoformat()
         conn.execute(
             """INSERT INTO cve_cache(software, version, cve_data, fetched_at)
                VALUES(?,?,?,?)
@@ -134,9 +151,15 @@ def lookup_cves(software: str, version: str, force_refresh: bool = False) -> lis
 
 
 def enrich_with_cves(nmap_text: str) -> str:
+    """
+    Parse nmap output for software versions, look up CVEs,
+    return a formatted string to inject into the LLM prompt.
+    Returns empty string if nothing found.
+    """
     pairs = extract_software_versions(nmap_text)
     if not pairs:
         return ""
+
     lines = ["[CVE Enrichment — NVD lookup]"]
     for sw, ver in pairs:
         cves = lookup_cves(sw, ver)
@@ -147,10 +170,12 @@ def enrich_with_cves(nmap_text: str) -> str:
                 lines.append(f"    {c['cve_id']} ({score}): {c['summary'][:120]}")
         else:
             lines.append(f"  {sw} {ver}: no CVEs in NVD")
+
     return "\n".join(lines)
 
 
 def show_cve_cache_stats() -> str:
+    """Return a one-line string with cache stats for the settings menu."""
     try:
         conn = sqlite3.connect(DB_PATH)
         _ensure_cache_table(conn)
