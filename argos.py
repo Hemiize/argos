@@ -248,7 +248,7 @@ def new_scan(prefill_target=None, prefill_depth=None):
         tool_names = tools.DEEP_TOOL_NAMES
     else:
         tool_names = tools.STANDARD_TOOL_NAMES
-    total_tools = len([n for n in tool_names if n not in existing]) if existing else len(tool_names)
+    total_tools = len(tool_names)
     _save_fn = lambda n, r: save_tool_result(sl_no, n, r)
 
     with ui.scan_progress(total_tools, label="Recon") as on_done:
@@ -723,6 +723,14 @@ def main():
         new_scan(prefill_target=args.target, prefill_depth=args.depth)
         return
 
+    def _run_action(fn):
+        try:
+            fn()
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            ui.error(f"Action failed: {exc}")
+
     first_run = True
     while True:
         # Clear exactly once per loop iteration, before printing the banner
@@ -748,16 +756,16 @@ def main():
         choice = ui.prompt("argos>").strip()
 
         if choice == "1":
-            new_scan()
+            _run_action(new_scan)
             ui.prompt("Press Enter to return to menu …", default="")
         elif choice == "2":
-            view_history()
+            _run_action(view_history)
             ui.prompt("Press Enter to return to menu …", default="")
         elif choice == "3":
-            diff_menu()
+            _run_action(diff_menu)
             ui.prompt("Press Enter to return to menu …", default="")
         elif choice == "4":
-            settings_menu()
+            _run_action(settings_menu)
             ui.prompt("Press Enter to return to menu …", default="")
         elif choice == "5":
             ui.console.print("\n[dim]Stay legal. Goodbye.[/dim]\n")
