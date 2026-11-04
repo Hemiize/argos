@@ -1,0 +1,41 @@
+# ARGOS — .gitignore
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Database (contains scan results)
+argos.db
+*.db
+
+# User settings (contains local paths / model names)
+settings.json
+
+# Generated reports
+reports/
+*.pdf
+*.html
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

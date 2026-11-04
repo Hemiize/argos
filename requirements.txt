@@ -1,0 +1,30 @@
+# ARGOS requirements
+# Install: pip install -r requirements.txt
+
+# Web search
+duckduckgo-search==8.1.1
+ddgs==9.12.1
+
+# HTTP / HTML
+requests==2.33.1
+beautifulsoup4==4.14.3
+lxml==6.0.2
+
+# DNS lookup (replaces dig)
+dnspython==2.7.0
+
+# WHOIS (replaces whois CLI)
+python-whois==0.9.4
+
+# PDF export
+reportlab==4.4.10
+pillow==12.2.0
+
+# CLI formatting
+rich==14.3.3
+
+# Misc
+certifi==2026.2.25
+charset-normalizer==3.4.6
+urllib3==2.6.3
+httpx==0.28.1
