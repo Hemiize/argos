@@ -8,7 +8,7 @@ import os
 APP_NAME  = "ARGOS"
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 
-# ── llama.cpp ──────────────────────────────────────────────────────────────
+# ── llama.cpp (OpenAI-compatible) ──────────────────────────────────────────
 LLAMA_URL   = "http://localhost:8080/v1/chat/completions"
 LLAMA_MODEL = "bench"        # model id as reported by /v1/models
 
@@ -26,3 +26,6 @@ REPORTS_DIR = os.path.join(BASE_DIR, "reports")
 LLM_TIMEOUT       = 600
 TOOL_TIMEOUT      = 180
 DEEP_SCAN_TIMEOUT = 900
+
+# ── Scan defaults ──────────────────────────────────────────
+DEFAULT_SCAN_DEPTH = "standard"   # "standard" | "deep" | "ultra"
