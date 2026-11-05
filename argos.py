@@ -546,6 +546,54 @@ def edit_delete_menu(sl_no: int):
 # SETTINGS MENU
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _model_launcher(s, cfg):
+    """List local GGUF files and (re)start llama-server with the chosen one."""
+    from urllib.parse import urlparse
+    models_dir = s.get("models_dir", "").strip()
+    launch_cmd = s.get("llama_launch_cmd", "").strip()
+    stop_cmd   = s.get("llama_stop_cmd", "").strip()
+
+    ggufs = llm.list_gguf_models(models_dir)
+    if not ggufs:
+        ui.warn(f"No .gguf files found in: {models_dir or '(models dir not set — Settings [C])'}")
+        return
+
+    ui.info(f"GGUF models in {models_dir}:")
+    for i, (name, _) in enumerate(ggufs, 1):
+        ui.info(f"  [{i:2d}] {name}")
+    ui.info("  [ 0] Cancel")
+    mc = ui.prompt("Select model to load", default="").strip()
+    if not mc.isdigit() or not (1 <= int(mc) <= len(ggufs)):
+        ui.warn("Cancelled.")
+        return
+    name, path = ggufs[int(mc) - 1]
+
+    if not launch_cmd:
+        ui.warn("No launch command set (Settings [D]) — cannot restart the server automatically.")
+        ui.info(f"Start it yourself with this model:\n  {path}")
+        return
+
+    if not ui.confirm(f"Restart llama-server with '{name}'? This interrupts the running server.",
+                      default=False):
+        ui.info("Cancelled.")
+        return
+
+    port = urlparse(cfg["url"]).port or 8080
+    with ui.spinner("Stopping current server …"):
+        llm.stop_llama_server(stop_cmd)
+        llm.wait_until_down(timeout=15)
+    if not llm.start_llama_server(launch_cmd, path, str(port)):
+        ui.error("Failed to spawn the launch command.")
+        return
+    ui.info("Launch command started — waiting for the model to load …")
+    with ui.spinner(f"Loading {name} (this can take a while) …"):
+        ready = llm.wait_until_ready(timeout=240)
+    if ready:
+        ui.success(f"llama-server is up with: {name}")
+    else:
+        ui.warn("Server did not report healthy within the timeout — check its window / server.log.")
+
+
 def settings_menu():
     while True:
         s = settings.load()
@@ -568,8 +616,10 @@ def settings_menu():
         basic_val  = "[dim](set)[/]" if settings.get_basic_auth() else "[dim](not set)[/]"
         dir_wl     = settings.get_wordlist("dir") or "[dim](built-in)[/]"
         sub_wl     = settings.get_wordlist("subdomain") or "[dim](built-in)[/]"
+        models_dir = s.get("models_dir", "") or "[dim](not set)[/]"
+        launch_set = "[dim](set)[/]" if s.get("llama_launch_cmd", "").strip() else "[dim](not set)[/]"
         ui.info(f"[1] LLM Backend     : {current_backend} — {cfg['label']}")
-        ui.info(f"[2] Model           : {cfg['model']}  [dim](select from server)[/]")
+        ui.info(f"[2] Model           : {cfg['model']}  [dim](select / load)[/]")
         ui.info(f"[3] Server URL      : {cfg['url']}")
         ui.info(f"[4] User-Agent      : {current_ua}")
         ui.info(f"[5] Show thinking   : {think_label}  (show <think>…</think> from reasoning models)")
@@ -579,6 +629,8 @@ def settings_menu():
         ui.info(f"[9] Basic auth      : {basic_val}")
         ui.info(f"[A] Dir wordlist    : {dir_wl}")
         ui.info(f"[B] Sub wordlist    : {sub_wl}")
+        ui.info(f"[C] Models dir      : {models_dir}")
+        ui.info(f"[D] Launch command  : {launch_set}")
         ui.info("[0] Back")
         ui.divider()
         choice = ui.prompt("Choice").strip()
@@ -600,6 +652,9 @@ def settings_menu():
         elif choice == "2":
             be  = settings.get_backend_name()
             key = "llamacpp_model" if be == "llama.cpp" else "ollama_model"
+            if be == "llama.cpp" and s.get("models_dir", "").strip():
+                _model_launcher(s, cfg)
+                continue
             with ui.spinner(f"Querying {cfg['label']} for available models …"):
                 models = llm.list_models()
             new_model = ""
@@ -704,6 +759,22 @@ def settings_menu():
             s["subdomain_wordlist"] = wl
             settings.save(s)
             ui.success(f"Subdomain wordlist: {wl or '(built-in)'}")
+
+        elif choice.upper() == "C":
+            md = ui.prompt("Models directory (folder with .gguf files)",
+                           default=s.get("models_dir", "")).strip()
+            s["models_dir"] = md
+            settings.save(s)
+            ui.success(f"Models dir: {md or '(not set)'}")
+
+        elif choice.upper() == "D":
+            ui.info("Command to (re)start llama-server. Use {model} for the GGUF path "
+                    "and {port} for the port.")
+            lc = ui.prompt("Launch command (empty to clear)",
+                           default=s.get("llama_launch_cmd", "")).strip()
+            s["llama_launch_cmd"] = lc
+            settings.save(s)
+            ui.success("Launch command " + ("set." if lc else "cleared."))
 
         elif choice == "0":
             break
