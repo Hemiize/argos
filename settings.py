@@ -61,6 +61,12 @@ DEFAULTS = {
     # custom wordlists (empty = use built-in lists)
     "dir_wordlist":       "",
     "subdomain_wordlist": "",
+    # local GGUF model launcher (llama.cpp). models_dir = folder with .gguf files;
+    # llama_launch_cmd = command to (re)start the server, with {model} and {port}
+    # placeholders; llama_stop_cmd = optional stop command (empty = kill by process name).
+    "models_dir":         "",
+    "llama_launch_cmd":   "",
+    "llama_stop_cmd":     "",
 }
 
 
