@@ -6,8 +6,10 @@ Supports llama.cpp (OpenAI-compatible) and Ollama.
 Streaming mode with live token/s counter.
 """
 
+import os
 import json
 import time
+import subprocess
 import requests
 import settings
 from config import LLM_TIMEOUT
@@ -642,3 +644,81 @@ def list_models() -> list:
             return [m.get("name", "") for m in models if m.get("name")]
     except Exception:
         return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOCAL GGUF MODEL LAUNCHER (llama.cpp)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def list_gguf_models(models_dir: str) -> list:
+    """Return [(filename, full_path)] for every *.gguf in models_dir (sorted)."""
+    out = []
+    if not models_dir or not os.path.isdir(models_dir):
+        return out
+    try:
+        for entry in sorted(os.listdir(models_dir)):
+            full = os.path.join(models_dir, entry)
+            if os.path.isfile(full) and entry.lower().endswith(".gguf"):
+                out.append((entry, full))
+    except Exception:
+        pass
+    return out
+
+
+def _health_ok(timeout: float = 3.0) -> bool:
+    try:
+        return requests.get(settings.get_backend_health_url(), timeout=timeout).status_code == 200
+    except Exception:
+        return False
+
+
+def stop_llama_server(stop_cmd: str = "") -> None:
+    """Stop a running llama-server: run stop_cmd if given, else kill it by process name."""
+    if stop_cmd.strip():
+        try:
+            subprocess.run(stop_cmd, shell=True, capture_output=True, timeout=30)
+        except Exception:
+            pass
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/IM", "llama-server.exe", "/F"],
+                           capture_output=True, timeout=15)
+        else:
+            subprocess.run(["pkill", "-f", "llama-server"], capture_output=True, timeout=15)
+    except Exception:
+        pass
+
+
+def start_llama_server(launch_cmd: str, model_path: str, port="8080") -> bool:
+    """Spawn the launch command detached (new console). Returns True if the spawn succeeded."""
+    cmd = launch_cmd.replace("{model}", model_path).replace("{port}", str(port))
+    try:
+        if os.name == "nt":
+            CREATE_NEW_CONSOLE = 0x00000010
+            subprocess.Popen(cmd, shell=True, creationflags=CREATE_NEW_CONSOLE)
+        else:
+            subprocess.Popen(cmd, shell=True, start_new_session=True)
+        return True
+    except Exception:
+        return False
+
+
+def wait_until_down(timeout: int = 15, poll: float = 1.0) -> bool:
+    """Poll until the server stops answering health (old instance gone)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _health_ok(timeout=2.0):
+            return True
+        time.sleep(poll)
+    return False
+
+
+def wait_until_ready(timeout: int = 240, poll: float = 2.0) -> bool:
+    """Poll the backend health endpoint until it is ready (model loaded) or timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _health_ok():
+            return True
+        time.sleep(poll)
+    return False
